@@ -1,0 +1,10 @@
+# Dependency folders
+/node_modules
+/dist
+
+# Environment variables (CRITICAL SECRETS)
+.env
+
+# Log files and OS files
+npm-debug.log*
+.DS_Store
