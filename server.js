@@ -1727,6 +1727,45 @@ app.delete('/api/queue/:queueId', async (req, res) => {
         if (!deletedEntry) { return res.status(200).json({ message: 'Entry not found or already removed.' }); }
         console.log(`[DELETE] Successfully deleted entry ${queueIdInt} for barber ${deletedEntry.barber_id}.`);
         console.log(`[DELETE] Checking to auto-fill Up Next for barber ${deletedEntry.barber_id}...`);
+        try {
+        // 1. Check if "Up Next" is empty
+        const { data: upNextSlot } = await supabase
+            .from('queue_entries')
+            .select('id')
+            .eq('barber_id', barberId)
+            .eq('status', 'Up Next') // <--- This is usually safe, but check the next query
+            .maybeSingle();
+
+        if (!upNextSlot) {
+            // 2. Find the next person in line (The logic that failed)
+            // WE MUST FIX THE AMBIGUITY HERE by specifying the table name
+            const { data: nextCustomer, error: findError } = await supabase
+                .from('queue_entries')
+                .select('*')
+                .eq('barber_id', barberId)
+                .eq('queue_entries.status', 'Waiting')  // <--- FIXED: Added "queue_entries."
+                .order('is_vip', { ascending: false }) // VIPs first
+                .order('id', { ascending: true })      // Then by arrival
+                .limit(1)
+                .maybeSingle();
+
+            if (findError) {
+                console.error(`[DELETE] Error finding next customer: ${findError.message}`);
+            } else if (nextCustomer) {
+                // 3. Promote them
+                await supabase
+                    .from('queue_entries')
+                    .update({ status: 'Up Next' })
+                    .eq('id', nextCustomer.id);
+                    
+                console.log(`[DELETE] Auto-promoted Customer #${nextCustomer.id} to Up Next`);
+                
+                // (Optional) Trigger Notification Logic Here
+            }
+        }
+    } catch (autoFillError) {
+        console.error(`[DELETE] Error auto-filling Up Next: ${autoFillError.message}`);
+    }
         const { data: promotedCustomers, error: promoteError } = await supabase.rpc('auto_fill_up_next_v2', {
             p_barber_id: deletedEntry.barber_id
         });
