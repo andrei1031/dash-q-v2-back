@@ -66,61 +66,47 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
 
 /**
  * ENFORCE QUEUE LOGIC (VIP SWAP & AUTO-FILL)
- * Place this function near your other helper functions (e.g., processUpNextNotification).
- * This ensures that if a VIP joins, they immediately bump a regular user from "Up Next".
+ * This function guarantees that a VIP in "Waiting" will IMMEDIATELLY bump a Regular user out of "Up Next".
  */
 async function enforceQueueLogic(barberId) {
     console.log(`[QueueLogic] Enforcing rules for Barber ${barberId}...`);
 
     try {
-        // 1. Fetch Current "Up Next" (if any)
-        const { data: upNextEntry } = await supabase
+        // 1. Fetch Current "Up Next"
+        const { data: currentUpNext } = await supabase
             .from('queue_entries')
             .select('*')
             .eq('barber_id', barberId)
             .eq('status', 'Up Next')
             .maybeSingle();
 
-        // 2. Fetch Top "Waiting" Candidate
-        // Sort by VIP (true first), then Time (oldest first)
+        // 2. Fetch Best "Waiting" Candidate
+        // Priority: VIPs (true) appear before Regulars (false/null).
+        // Tie-breaker: Oldest 'created_at' comes first.
         const { data: waitingList } = await supabase
             .from('queue_entries')
             .select('*')
             .eq('barber_id', barberId)
-            .eq('queue.status', 'waiting')
-            .order('is_vip', { ascending: false }) // VIPs first
-            .order('created_at', { ascending: true }) // Then First-Come-First-Serve
+            .eq('status', 'Waiting')
+            .order('is_vip', { ascending: false }) 
+            .order('created_at', { ascending: true })
             .limit(1);
 
         const topCandidate = waitingList?.length > 0 ? waitingList[0] : null;
 
-        // --- SCENARIO A: Up Next is Empty ---
-        // Simply fill the slot with the top candidate
-        if (!upNextEntry && topCandidate) {
-            console.log(`[QueueLogic] Up Next is empty. Promoting #${topCandidate.id} (${topCandidate.is_vip ? 'VIP' : 'Reg'}).`);
+        // --- SCENARIO A: VIP BUMP (The Priority Fix) ---
+        // If "Up Next" exists but is NOT VIP, and the top waiter IS VIP... SWAP THEM.
+        if (currentUpNext && !currentUpNext.is_vip && topCandidate && topCandidate.is_vip) {
+            console.log(`[QueueLogic] 👑 VIP #${topCandidate.id} is bumping Regular #${currentUpNext.id}!`);
 
-            const { data: newUpNext } = await supabase
-                .from('queue_entries')
-                .update({ status: 'Up Next' })
-                .eq('id', topCandidate.id)
-                .select()
-                .single();
-
-            return [newUpNext];
-        }
-
-        // --- SCENARIO B: VIP Bump (The Fix) ---
-        // If Up Next is REGULAR, and Top Waiting is VIP... SWAP THEM.
-        if (upNextEntry && !upNextEntry.is_vip && topCandidate && topCandidate.is_vip) {
-            console.log(`[QueueLogic] VIP #${topCandidate.id} is bumping Regular #${upNextEntry.id}!`);
-
-            // 1. Demote current Up Next back to Waiting
+            // 1. Demote the Regular user back to Waiting
+            // (They keep their original created_at, so they stay at the front of the Regular line)
             await supabase
                 .from('queue_entries')
                 .update({ status: 'Waiting' })
-                .eq('id', upNextEntry.id);
+                .eq('id', currentUpNext.id);
 
-            // 2. Promote VIP to Up Next
+            // 2. Promote the VIP to Up Next
             const { data: newUpNext } = await supabase
                 .from('queue_entries')
                 .update({ status: 'Up Next' })
@@ -131,8 +117,23 @@ async function enforceQueueLogic(barberId) {
             return [newUpNext];
         }
 
-        // --- SCENARIO C: No changes needed ---
-        return upNextEntry ? [upNextEntry] : [];
+        // --- SCENARIO B: Empty Chair Auto-Fill ---
+        // If "Up Next" is empty, simply promote the top candidate (VIP or Regular)
+        if (!currentUpNext && topCandidate) {
+            console.log(`[QueueLogic] Up Next is empty. Promoting #${topCandidate.id}.`);
+
+            const { data: newUpNext } = await supabase
+                .from('queue_entries')
+                .update({ status: 'Up Next' })
+                .eq('id', topCandidate.id)
+                .select()
+                .single();
+
+            return [newUpNext];
+        }
+
+        // --- SCENARIO C: No Changes ---
+        return currentUpNext ? [currentUpNext] : [];
 
     } catch (error) {
         console.error("[QueueLogic] Error enforcing rules:", error.message);
