@@ -407,39 +407,6 @@ app.get('/api/customer/history/:userId', async (req, res) => {
     }
 });
 
-app.get('/api/admin/conversations', async (req, res) => {
-    // This SQL is tricky: It finds the latest message for every unique barber-customer pair
-    const sql = `
-        SELECT DISTINCT ON (LEAST(sender_id, receiver_id), GREATEST(sender_id, receiver_id))
-            id, sender_id, receiver_id, message, timestamp
-        FROM messages
-        ORDER BY LEAST(sender_id, receiver_id), GREATEST(sender_id, receiver_id), timestamp DESC
-    `;
-    const result = await db.query(sql);
-    res.json(result.rows);
-});
-
-app.get('/api/admin/chat-history', async (req, res) => {
-    const { barberId, customerId } = req.query;
-    
-    const result = await db.query(
-        "SELECT * FROM messages WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1) ORDER BY timestamp ASC",
-        [barberId, customerId]
-    );
-    res.json(result.rows);
-});
-
-app.post('/api/admin/reply', async (req, res) => {
-    const { barberId, customerId, message } = req.body;
-
-    // We save the message as if it came FROM the barber (sender_id = barberId)
-    await db.query(
-        "INSERT INTO messages (sender_id, receiver_id, message) VALUES ($1, $2, $3)",
-        [barberId, customerId, `[Admin]: ${message}`] // Optional: Add [Admin] tag
-    );
-
-    res.json({ success: true });
-});
 
 /**
  * ENDPOINT: Timezone-Aware Smart Slots
@@ -2318,6 +2285,162 @@ cron.schedule('*/5 * * * *', async () => { // Runs every 5 minutes
         }
     } catch (e) {
         console.error("[Cron] Error processing appointments:", e);
+    }
+});
+
+// [server.js] - ADD THESE NEW ENDPOINTS
+
+/**
+ * FEATURE 1: Admin "Force Next"
+ * Automatically finds the next person for a specific barber and moves them to "In Progress".
+ */
+app.post('/api/admin/force-next', async (req, res) => {
+    const { userId, barberId } = req.body; // userId is Admin's ID
+
+    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    try {
+        // 1. Check if chair is occupied
+        const { data: inChair } = await supabase
+            .from('queue_entries')
+            .select('id, customer_name')
+            .eq('barber_id', barberId)
+            .eq('status', 'In Progress')
+            .maybeSingle();
+
+        if (inChair) {
+            return res.status(400).json({ error: `Chair is currently occupied by ${inChair.customer_name}. Finish them first.` });
+        }
+
+        // 2. Find the next candidate (Up Next OR Top Waiting)
+        // Priority: Up Next -> VIP Waiting -> Regular Waiting
+        let nextCustomer = null;
+
+        // A. Check Up Next
+        const { data: upNext } = await supabase
+            .from('queue_entries')
+            .select('*')
+            .eq('barber_id', barberId)
+            .eq('status', 'Up Next')
+            .maybeSingle();
+        
+        nextCustomer = upNext;
+
+        // B. If no Up Next, check Waiting
+        if (!nextCustomer) {
+            const { data: waiting } = await supabase
+                .from('queue_entries')
+                .select('*')
+                .eq('barber_id', barberId)
+                .eq('status', 'Waiting')
+                .order('is_vip', { ascending: false })
+                .order('created_at', { ascending: true })
+                .limit(1)
+                .maybeSingle();
+            nextCustomer = waiting;
+        }
+
+        if (!nextCustomer) {
+            return res.status(400).json({ error: 'Queue is empty for this barber.' });
+        }
+
+        console.log(`[Admin Force] Moving Customer #${nextCustomer.id} for Barber ${barberId}`);
+
+        // 3. EXECUTE MOVE (Re-using RPC Logic)
+        const { error: rpcError } = await supabase.rpc('call_next_customer', {
+            p_barber_id: parseInt(barberId),
+            p_queue_id: nextCustomer.id
+        });
+
+        if (rpcError) throw rpcError;
+
+        // 4. TRIGGER AUTO-FILL (Atomic logic)
+        await enforceQueueLogic(parseInt(barberId));
+
+        // 5. NOTIFY (Standard Logic)
+        // We trigger the notification logic just like the standard endpoint
+        // (Simplified here: The standard /api/queue/next does this, but since we called RPC directly,
+        // we rely on the client or the fact that 'call_next_customer' sets status to 'In Progress')
+
+        res.json({ message: `Successfully moved ${nextCustomer.customer_name} to chair.`, customer: nextCustomer });
+
+    } catch (error) {
+        console.error("Force Next Error:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * FEATURE 2: Admin "Omni-Chat" - Get Active Chats
+ * Returns list of customers currently in queue (Waiting/UpNext/InProgress) who have chat messages.
+ */
+app.get('/api/admin/active-chats', async (req, res) => {
+    try {
+        // 1. Get all active queue entries
+        const { data: entries, error } = await supabase
+            .from('queue_entries')
+            .select(`
+                id, 
+                customer_name, 
+                status, 
+                barber_id,
+                user_id,
+                barber_profiles(full_name),
+                profiles(id, role)
+            `)
+            .in('status', ['Waiting', 'Up Next', 'In Progress'])
+            .order('updated_at', { ascending: false });
+
+        if (error) throw error;
+
+        // 2. Filter: Only keep entries that actually have messages in 'chat_messages'
+        // This prevents the admin list from being cluttered with empty chats.
+        const activeChats = [];
+        
+        for (const entry of entries) {
+            const { count } = await supabase
+                .from('chat_messages')
+                .select('*', { count: 'exact', head: true })
+                .eq('queue_entry_id', entry.id);
+            
+            if (count > 0) {
+                activeChats.push({ ...entry, message_count: count });
+            }
+        }
+
+        res.json(activeChats);
+
+    } catch (error) {
+        console.error("Admin Chats Error:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * FEATURE 2: Admin "Omni-Chat" - Send Reply
+ * Admin sends a message into a specific queue entry chat.
+ */
+app.post('/api/admin/chat/reply', async (req, res) => {
+    const { adminId, queueId, message } = req.body;
+
+    if (!await isAdmin(adminId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    try {
+        // Tag the message so the UI knows it's from Admin
+        const adminMessage = `[ADMIN]: ${message}`;
+
+        const { data, error } = await supabase.from('chat_messages').insert({
+            queue_entry_id: parseInt(queueId),
+            sender_id: adminId, 
+            message: adminMessage,
+        }).select().single();
+
+        if (error) throw error;
+        res.json(data);
+
+    } catch (error) {
+        console.error("Admin Reply Error:", error);
+        res.status(500).json({ error: error.message });
     }
 });
 
