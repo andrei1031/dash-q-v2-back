@@ -1035,7 +1035,7 @@ app.post('/api/login/username', async (req, res) => {
 
 
 /**
- * ENDPOINT 2 (RPC): Add a customer and auto-assign status (FIXED FOR VIP)
+ * ENDPOINT 2 (RPC): Add a customer and auto-assign status (FIXED FOR EMPTY QUEUE)
  */
 app.post('/api/queue', async (req, res) => {
     const {
@@ -1102,24 +1102,53 @@ app.post('/api/queue', async (req, res) => {
         if (!newQueueEntry) { throw new Error('Database function did not return a new entry.'); }
 
         // ============================================================
-        // 🟢 CRITICAL FIX: FORCE VIP PROMOTION CHECK IMMEDIATELY
+        // 🔵 NEW FIX: FILL EMPTY "UP NEXT" SLOT IMMEDIATELY
+        // ============================================================
+        // If the database put them in "Waiting", checking if "Up Next" is actually empty.
+        if (newQueueEntry.status === 'Waiting') {
+             // Check if anyone else is currently "Up Next" for this barber
+            const { data: upNextData } = await supabase
+                .from('queue_entries')
+                .select('id')
+                .eq('barber_id', barberIdInt)
+                .eq('status', 'Up Next')
+                .maybeSingle();
+
+            // If NO ONE is "Up Next", promote this new person immediately
+            if (!upNextData) {
+                console.log(`[RPC Join] "Up Next" slot is empty. Promoting #${newQueueEntry.id} immediately.`);
+                
+                const { data: updatedEntry, error: updateError } = await supabase
+                    .from('queue_entries')
+                    .update({ status: 'Up Next' })
+                    .eq('id', newQueueEntry.id)
+                    .select()
+                    .single();
+
+                if (!updateError && updatedEntry) {
+                    newQueueEntry = updatedEntry; // Update our local variable so notifications fire below
+                }
+            }
+        }
+        // ============================================================
+        // 🔵 END FIX
+        // ============================================================
+
+
+        // ============================================================
+        // 🟢 EXISTING VIP LOGIC (Run this AFTER filling the empty slot)
         // ============================================================
         console.log(`[RPC Join] Triggering VIP enforcement for Barber ${barberIdInt}...`);
 
         // This executes the JS logic to SWAP a Regular "Up Next" with a VIP "Waiting"
         const promotedCustomers = await enforceQueueLogic(barberIdInt);
 
-        // If the user we just added got promoted in the logic above, update our local variable
-        // so the frontend receives the correct 'Up Next' status immediately.
         const promotedEntry = promotedCustomers.find(c => c && c.id === newQueueEntry.id);
-
         if (promotedEntry) {
-            console.log(`[RPC Join] User #${newQueueEntry.id} was immediately promoted to ${promotedEntry.status}`);
+            console.log(`[RPC Join] User #${newQueueEntry.id} was immediately promoted to ${promotedEntry.status} by VIP logic`);
             newQueueEntry = promotedEntry;
         }
-        // ============================================================
-        // 🔴 END FIX
-        // ============================================================
+
 
         // --- 3. HANDLE HEAD COUNT (For groups) ---
         if (newQueueEntry && head_count > 1) {
@@ -1137,7 +1166,6 @@ app.post('/api/queue', async (req, res) => {
         if (newQueueEntry.status === 'Up Next') {
             console.log(`[RPC Join] Customer ${newQueueEntry.id} is "Up Next". Triggering notifications...`);
 
-            // Mark as notified immediately to avoid duplicates from cron
             await supabase.from('queue_entries').update({ notified_up_next: true }).eq('id', newQueueEntry.id);
 
             const context = await getNotificationContext(newQueueEntry);
