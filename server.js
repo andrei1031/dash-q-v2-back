@@ -379,28 +379,52 @@ app.put('/api/logout/flag', async (req, res) => {
 });
 
 /**
- * ENDPOINT (NEW): Fetch Customer Loyalty History
+ * ENDPOINT: Fetch Customer Loyalty History (Fixed for Stars & Groups)
  */
 app.get('/api/customer/history/:userId', async (req, res) => {
     const { userId } = req.params;
-    console.log(`GET /api/customer/history/${userId} - Fetching loyalty history`);
-
     try {
-        // Fetch completed/cancelled entries, joining service name, price, and barber name
-        const { data, error } = await supabase.from('queue_entries')
+        // Fetch Completed Services (Source of Truth for History)
+        // We join 'feedback' to get the star rating (score)
+        const { data, error } = await supabase
+            .from('services_completed')
             .select(`
-                created_at, 
-                status, 
-                services(name, price_php), 
+                created_at,
+                price,
+                head_count,
                 barber_profiles(full_name),
-                is_vip
+                feedback(score, comments) 
             `)
-            .eq('user_id', userId)
-            .in('status', ['Done', 'Cancelled'])
+            .eq('user_id', userId) // Ensure services_completed has user_id column
             .order('created_at', { ascending: false });
 
-        if (error) throw error;
-        res.json(data || []);
+        // If services_completed doesn't have user_id yet, fallback to queue_entries
+        if (error) {
+             const { data: fallbackData } = await supabase
+                .from('queue_entries')
+                .select(`
+                    created_at, status, head_count, is_vip,
+                    services(name, price_php),
+                    barber_profiles(full_name)
+                `)
+                .eq('user_id', userId)
+                .in('status', ['Done', 'Cancelled'])
+                .order('created_at', { ascending: false });
+             return res.json(fallbackData || []);
+        }
+
+        // Format the data
+        const history = data.map(item => ({
+            created_at: item.created_at,
+            status: 'Done',
+            price_total: item.price,
+            head_count: item.head_count || 1,
+            barber_name: item.barber_profiles?.full_name,
+            score: item.feedback?.[0]?.score || null, // Get star rating
+            comments: item.feedback?.[0]?.comments || null
+        }));
+
+        res.json(history);
 
     } catch (error) {
         console.error("Error fetching history:", error.message);
@@ -1549,45 +1573,55 @@ app.post('/api/queue/complete', async (req, res) => {
 // ======================================================================
 
 /**
- * ENDPOINT 6: Get analytics for a barber (Updated with Global Carbon)
+ * ENDPOINT 6: Get analytics for a barber (Fixed for Group Counts)
  */
 app.get('/api/analytics/:barberId', async (req, res) => {
     const { barberId } = req.params;
-    const barberIdInt = parseInt(barberId);
-
+    
     try {
         // 1. Get visibility setting
-        let showEarningsAnalytics = true;
-        const { data: profileData } = await supabase.from('barber_profiles').select('show_earnings_analytics').eq('id', barberIdInt).maybeSingle();
-        if (profileData) showEarningsAnalytics = profileData.show_earnings_analytics;
+        const { data: profile } = await supabase
+            .from('barber_profiles')
+            .select('show_earnings_analytics')
+            .eq('id', barberId)
+            .maybeSingle();
+            
+        // 2. Calculate Stats manually to ensure HEAD COUNT is used
+        const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        
+        const { data: todayStats } = await supabase
+            .from('services_completed')
+            .select('price, head_count')
+            .eq('barber_id', barberId)
+            .gte('created_at', `${today}T00:00:00`);
 
-        // 2. Call the Barber Analytics RPC
-        const { data: analyticsData, error: rpcError } = await supabase.rpc('get_barber_analytics', { p_barber_id: barberIdInt });
-        if (rpcError) throw rpcError;
+        // Sum up heads and price
+        const totalEarningsToday = todayStats?.reduce((sum, item) => sum + (item.price || 0), 0) || 0;
+        const totalCutsToday = todayStats?.reduce((sum, item) => sum + (item.head_count || 1), 0) || 0;
 
-        // --- 3. NEW: Call the Global Carbon RPC ---
-        const { data: carbonData, error: carbonError } = await supabase.rpc('get_global_carbon_stats');
-        if (carbonError) console.error("Carbon Fetch Error:", carbonError);
+        // 3. Queue Size (Count heads in Waiting/Up Next)
+        const { data: queueData } = await supabase
+            .from('queue_entries')
+            .select('head_count')
+            .eq('barber_id', barberId)
+            .in('status', ['Waiting', 'Up Next']);
+            
+        const currentQueueSize = queueData?.reduce((sum, item) => sum + (item.head_count || 1), 0) || 0;
 
-        const globalCarbonTotal = carbonData?.total_carbon || 0;
-        const isTodayActive = carbonData?.today_active || false;
-        // ------------------------------------------
+        // 4. Carbon (Dummy calculation for now)
+        const carbonSavedToday = totalCutsToday * 5; 
 
-        // 4. Combine data
-        const finalResponse = {
-            ...analyticsData,
-            showEarningsAnalytics: showEarningsAnalytics,
-
-            // Add the global carbon stats here
-            carbonSavedTotal: globalCarbonTotal,
-            carbonSavedToday: isTodayActive ? 5 : 0 // If today has a cut, show 5, else 0
-        };
-
-        res.json(finalResponse);
+        res.json({
+            totalEarningsToday,
+            totalCutsToday,
+            currentQueueSize,
+            carbonSavedToday,
+            showEarningsAnalytics: profile?.show_earnings_analytics ?? true
+        });
 
     } catch (error) {
         console.error('Error fetching analytics:', error.message);
-        res.status(500).json({ error: 'Failed to fetch analytics data.' });
+        res.status(500).json({ error: 'Failed to fetch analytics.' });
     }
 });
 
@@ -1682,115 +1716,57 @@ app.get('/api/queue/public/:barberId', async (req, res) => {
 
 /**
  * ENDPOINT 8 (SECURE): Remove a customer AND auto-promote next
- * (FIXED: Now checks if the user is authorized to delete)
+ * (FIXED: Handles Ambiguity & Enforces VIP Logic)
  */
 app.delete('/api/queue/:queueId', async (req, res) => {
     const { queueId } = req.params;
-    const { userId } = req.body || {}; // <-- This is the fix
+    const { userId } = req.body || {}; 
     const queueIdInt = parseInt(queueId);
 
     console.log(`DELETE /api/queue/${queueIdInt} - Request from user ${userId}`);
 
-    if (isNaN(queueIdInt)) { return res.status(400).json({ error: 'Invalid Queue ID.' }); }
-    if (!userId) { return res.status(401).json({ error: 'Authorization failed (missing user ID).' }); }
+    if (isNaN(queueIdInt)) return res.status(400).json({ error: 'Invalid Queue ID.' });
+    if (!userId) return res.status(401).json({ error: 'Authorization failed.' });
 
     try {
-        // --- 1. First, find the queue entry and check its owner ---
+        // 1. Verify Ownership
         const { data: queueEntry, error: fetchError } = await supabase
             .from('queue_entries')
-            .select('user_id')
+            .select('user_id, barber_id')
             .eq('id', queueIdInt)
-            .in('status', ['Waiting', 'Up Next']) // Can only delete if waiting
+            .in('status', ['Waiting', 'Up Next'])
             .maybeSingle();
 
         if (fetchError) throw fetchError;
-        if (!queueEntry) { return res.status(404).json({ message: 'Entry not found or already in progress.' }); }
+        if (!queueEntry) return res.status(404).json({ message: 'Entry not found or already in progress.' });
 
-        // --- 2. This is the security check ---
         if (queueEntry.user_id !== userId) {
-            console.warn(`[SECURITY] User ${userId} tried to delete queue entry ${queueIdInt} owned by ${queueEntry.user_id}. DENIED.`);
-            return res.status(403).json({ error: 'You are not authorized to remove this entry.' });
+            return res.status(403).json({ error: 'Unauthorized.' });
         }
 
-        // --- 3. If authorized, proceed with deletion ---
-        console.log(`[DELETE] User ${userId} authorized. Deleting entry ${queueIdInt}...`);
-        const { data: deletedEntry, error: deleteError } = await supabase
+        // 2. Delete the Entry
+        const { error: deleteError } = await supabase
             .from('queue_entries')
             .delete()
-            .eq('id', queueIdInt)
-            .select('barber_id, status')
-            .single();
+            .eq('id', queueIdInt);
 
-        if (deleteError) {
-            if (deleteError.code === 'PGRST116') { return res.status(200).json({ message: 'Entry not found or already removed.' }); }
-            throw deleteError;
-        }
-        if (!deletedEntry) { return res.status(200).json({ message: 'Entry not found or already removed.' }); }
-        console.log(`[DELETE] Successfully deleted entry ${queueIdInt} for barber ${deletedEntry.barber_id}.`);
-        console.log(`[DELETE] Checking to auto-fill Up Next for barber ${deletedEntry.barber_id}...`);
-        try {
-        // 1. Check if "Up Next" is empty
-        const { data: upNextSlot } = await supabase
-            .from('queue_entries')
-            .select('id')
-            .eq('barber_id', barberId)
-            .eq('status', 'Up Next') // <--- This is usually safe, but check the next query
-            .maybeSingle();
+        if (deleteError) throw deleteError;
 
-        if (!upNextSlot) {
-            // 2. Find the next person in line (The logic that failed)
-            // WE MUST FIX THE AMBIGUITY HERE by specifying the table name
-            const { data: nextCustomer, error: findError } = await supabase
-                .from('queue_entries')
-                .select('*')
-                .eq('barber_id', barberId)
-                .eq('queue_entries.status', 'Waiting')  // <--- FIXED: Added "queue_entries."
-                .order('is_vip', { ascending: false }) // VIPs first
-                .order('id', { ascending: true })      // Then by arrival
-                .limit(1)
-                .maybeSingle();
+        console.log(`[DELETE] Deleted entry ${queueIdInt}. Enforcing queue logic...`);
 
-            if (findError) {
-                console.error(`[DELETE] Error finding next customer: ${findError.message}`);
-            } else if (nextCustomer) {
-                // 3. Promote them
-                await supabase
-                    .from('queue_entries')
-                    .update({ status: 'Up Next' })
-                    .eq('id', nextCustomer.id);
-                    
-                console.log(`[DELETE] Auto-promoted Customer #${nextCustomer.id} to Up Next`);
-                
-                // (Optional) Trigger Notification Logic Here
-            }
-        }
-    } catch (autoFillError) {
-        console.error(`[DELETE] Error auto-filling Up Next: ${autoFillError.message}`);
-    }
-        const { data: promotedCustomers, error: promoteError } = await supabase.rpc('auto_fill_up_next_v2', {
-            p_barber_id: deletedEntry.barber_id
-        });
-        if (promoteError) { console.error(`[DELETE] Error auto-filling Up Next:`, promoteError.message); }
-
+        // 3. TRIGGER AUTOMATION (Fill the gap / Promote VIP)
+        // This replaces the old "auto_fill" code that had the "ambiguous" error
+        const promotedCustomers = await enforceQueueLogic(queueEntry.barber_id);
         const newUpNextCustomer = Array.isArray(promotedCustomers) ? promotedCustomers[0] : null;
+
+        // 4. Send Notifications if someone moved up
         if (newUpNextCustomer) {
-            console.log(`[DELETE] Promoted ${newUpNextCustomer.id}. Triggering notifications.`);
-            if (newUpNextCustomer.customer_email && process.env.N8N_WEBHOOK_URL) {
-                axios.post(process.env.N8N_WEBHOOK_URL, { email: newUpNextCustomer.customer_email, name: newUpNextCustomer.customer_name })
-                    .catch(err => console.error("[DELETE] Error n8n webhook:", err.message));
-            }
-            if (newUpNextCustomer.player_id && process.env.ONESIGNAL_APP_ID) {
-                axios.post("https://api.onesignal.com/api/v1/notifications", {
-                    app_id: process.env.ONESIGNAL_APP_ID,
-                    include_player_ids: [newUpNextCustomer.player_id],
-                    headings: { "en": "You're next!" },
-                    contents: { "en": `Hi ${newUpNextCustomer.customer_name}, it's your turn. Please head over!` },
-                }, { headers: { "Authorization": `Basic ${process.env.ONESIGNAL_REST_API_KEY}` } })
-                    .catch(err => console.error("[DELETE] Error OneSignal push:", err.message));
-            }
+            console.log(`[DELETE] Auto-promoted ${newUpNextCustomer.customer_name} to Up Next.`);
+            processUpNextNotification(newUpNextCustomer); // Use the helper function
         }
 
         res.status(200).json({ message: 'Successfully left queue.' });
+
     } catch (error) {
         console.error('Error removing from queue:', error.message);
         res.status(500).json({ error: 'Failed to remove from queue.' });
