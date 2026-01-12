@@ -389,11 +389,15 @@ app.get('/api/customer/history/:userId', async (req, res) => {
         const { data, error } = await supabase
             .from('services_completed')
             .select(`
-                created_at,
-                price,
-                head_count,
+                created_at, 
+                status, 
+                services(name, price_php), 
                 barber_profiles(full_name),
-                feedback(score, comments) 
+                is_vip,
+                head_count,
+                score,
+                feedback_comment,
+                tip_amount
             `)
             .eq('user_id', userId) // Ensure services_completed has user_id column
             .order('created_at', { ascending: false });
@@ -1534,7 +1538,7 @@ app.post('/api/queue/complete', async (req, res) => {
         const baseTotal = servicePrice * headCount;
         const totalProfit = baseTotal + tipInt + vipChargeInt;
 
-        const { error: updateError } = await supabase.from('queue_entries').update({ status: 'Done' }).eq('id', queueIdInt).eq('status', 'In Progress');
+        const { error: updateError } = await supabase.from('queue_entries').update({ status: 'Done', tip_amount: tipInt }).eq('id', queueIdInt).eq('status', 'In Progress');
         if (updateError) { console.error('Error updating queue status to Done:', updateError.message); return res.status(500).json({ error: updateError.message }); }
 
         // Log the service with the total profit (Base + Tip + VIP)
