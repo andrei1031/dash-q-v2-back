@@ -384,10 +384,7 @@ app.put('/api/logout/flag', async (req, res) => {
 app.get('/api/customer/history/:userId', async (req, res) => {
     const { userId } = req.params;
     try {
-        // Fetch Completed Services (Source of Truth for History)
-        // We join 'feedback' to get the star rating (score)
-        const { data, error } = await supabase
-            .from('services_completed')
+        const { data, error } = await supabase.from('queue_entries')
             .select(`
                 created_at, 
                 status, 
@@ -397,9 +394,9 @@ app.get('/api/customer/history/:userId', async (req, res) => {
                 head_count,
                 score,
                 feedback_comment,
-                tip_amount
-            `)
-            .eq('user_id', userId) // Ensure services_completed has user_id column
+                tip_amount  
+            `) // <--- ADDED tip_amount HERE
+            .eq('user_id', userId)
             .order('created_at', { ascending: false });
 
         // If services_completed doesn't have user_id yet, fallback to queue_entries
@@ -1538,8 +1535,20 @@ app.post('/api/queue/complete', async (req, res) => {
         const baseTotal = servicePrice * headCount;
         const totalProfit = baseTotal + tipInt + vipChargeInt;
 
-        const { error: updateError } = await supabase.from('queue_entries').update({ status: 'Done', tip_amount: tipInt }).eq('id', queueIdInt).eq('status', 'In Progress');
-        if (updateError) { console.error('Error updating queue status to Done:', updateError.message); return res.status(500).json({ error: updateError.message }); }
+        // 1. UPDATE QUEUE ENTRY: Mark as Done AND save the tip amount
+        const { error: updateError } = await supabase
+            .from('queue_entries')
+            .update({ 
+                status: 'Done', 
+                tip_amount: tipInt // <--- CRITICAL: SAVES TIP TO HISTORY
+            })
+            .eq('id', queueIdInt)
+            .eq('status', 'In Progress');
+
+        if (updateError) { 
+            console.error('Error updating queue status:', updateError.message); 
+            return res.status(500).json({ error: updateError.message }); 
+        }
 
         // Log the service with the total profit (Base + Tip + VIP)
         const { data, error: insertError } = await supabase.from('services_completed').insert([{ barber_id: barberIdInt, price: totalProfit, head_count: headCount }]).select();
