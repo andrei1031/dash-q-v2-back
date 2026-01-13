@@ -472,7 +472,7 @@ app.get('/api/appointments/slots', async (req, res) => {
             .from('appointments')
             .select('scheduled_time, end_time')
             .eq('barber_id', barberId)
-            .eq('status', 'confirmed')
+            .in('status', ['confirmed', 'pending'])
             .gte('scheduled_time', dbStart)
             .lte('scheduled_time', dbEnd);
 
@@ -555,13 +555,13 @@ app.post('/api/appointments/book', async (req, res) => {
             .from('appointments')
             .select('id')
             .eq('barber_id', barber_id)
-            .eq('status', 'confirmed') // Only check confirmed slots
-            .lt('scheduled_time', endDate.toISOString()) // Existing start < New end
-            .gt('end_time', startDate.toISOString())     // Existing end > New start
+            .in('status', ['confirmed', 'pending']) // <--- CHANGED
+            .lt('scheduled_time', endDate.toISOString())
+            .gt('end_time', startDate.toISOString())
             .maybeSingle();
 
         if (conflict) {
-            return res.status(409).json({ error: 'Slot was just taken. Please choose another.' });
+            return res.status(409).json({ error: 'Slot is pending approval or taken. Please choose another.' });
         }
 
         // 4. Insert Appointment
@@ -573,7 +573,7 @@ app.post('/api/appointments/book', async (req, res) => {
             service_id,
             scheduled_time: startDate.toISOString(),
             end_time: endDate.toISOString(),
-            status: 'confirmed', // Immediately confirmed
+            status: 'pending', // Immediately confirmed
             is_converted_to_queue: false
         }).select().single();
 
@@ -656,6 +656,43 @@ app.put('/api/appointments/reject', async (req, res) => {
     } catch (error) {
         console.error("Reject error:", error.message);
         res.status(500).json({ error: 'Failed to reject appointment.' });
+    }
+});
+
+/**
+ * ENDPOINT: Barber Approves an Appointment
+ */
+app.put('/api/appointments/approve', async (req, res) => {
+    const { appointmentId } = req.body;
+    if (!appointmentId) return res.status(400).json({ error: 'Appointment ID required.' });
+
+    try {
+        // 1. Mark as Confirmed
+        const { data: appt, error } = await supabase
+            .from('appointments')
+            .update({ status: 'confirmed' })
+            .eq('id', appointmentId)
+            .select('customer_email, customer_name, scheduled_time')
+            .single();
+
+        if (error) throw error;
+
+        // 2. Notify Customer
+        if (appt && process.env.N8N_WEBHOOK_URL) {
+            console.log(`[Approve] Notifying ${appt.customer_email}`);
+            await axios.post(process.env.N8N_WEBHOOK_URL, {
+                type: 'confirmation', // Use a template that says "You are confirmed!"
+                email: appt.customer_email,
+                name: appt.customer_name,
+                date: new Date(appt.scheduled_time).toLocaleString('en-US', { timeZone: 'Asia/Manila' })
+            }).catch(err => console.error("Notification failed:", err.message));
+        }
+
+        res.json({ message: 'Appointment approved successfully!' });
+
+    } catch (error) {
+        console.error("Approve error:", error.message);
+        res.status(500).json({ error: 'Failed to approve appointment.' });
     }
 });
 
