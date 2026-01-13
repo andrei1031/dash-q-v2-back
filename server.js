@@ -2337,24 +2337,28 @@ cron.schedule('*/5 * * * *', async () => { // Runs every 5 minutes
     console.log('[Cron] Checking for upcoming appointments...');
 
     const now = new Date();
-    // Look ahead 30 minutes (or change to 10 if you want it tighter)
+    // Look ahead 30 minutes
     const lookAheadTime = new Date(now.getTime() + 30 * 60000);
+    
+    // Look BEHIND 24 hours (Safety Net for "Missed" appointments)
+    const lookBehindTime = new Date(now.getTime() - 24 * 60 * 60 * 1000); 
 
     try {
-        // 1. Find confirmed appointments due soon that aren't in the queue yet
+        // 1. Find confirmed appointments due soon (or slightly past due)
         const { data: dueAppointments } = await supabase
             .from('appointments')
             .select('*')
-            .in('status', ['confirmed']) // Only confirmed ones
+            .in('status', ['confirmed']) 
             .eq('is_converted_to_queue', false)
-            .lte('scheduled_time', lookAheadTime.toISOString())
-            .gte('scheduled_time', now.toISOString());
+            .lte('scheduled_time', lookAheadTime.toISOString()) // Starts before 30 mins from now
+            .gte('scheduled_time', lookBehindTime.toISOString()); // But not older than yesterday
 
         if (dueAppointments && dueAppointments.length > 0) {
             for (const appt of dueAppointments) {
+                // ... (Keep the rest of the logic exactly the same) ...
                 console.log(`[Cron] Processing Appointment #${appt.id} for Barber ${appt.barber_id}...`);
-
-                // 2. CHECK THE CHAIR STATUS
+                
+                // ... (Chair Check Logic) ...
                 const { data: activeQueue } = await supabase
                     .from('queue_entries')
                     .select('id, status')
@@ -2366,27 +2370,20 @@ cron.schedule('*/5 * * * *', async () => { // Runs every 5 minutes
 
                 let initialStatus = 'Waiting';
 
-                // --- LOGIC: CHAIR CHECK ---
                 if (!personInChair) {
-                    // CASE A: Chair is Empty -> GO STRAIGHT TO CHAIR
                     console.log(`---> Chair empty. Auto-seating Appointment #${appt.id}.`);
                     initialStatus = 'In Progress';
                 } else {
-                    // CASE B: Chair Taken -> FORCE INTO UP NEXT
                     console.log(`---> Chair taken. Forcing Appointment #${appt.id} to Up Next.`);
                     initialStatus = 'Up Next';
 
-                    // If someone is ALREADY Up Next, kick them back to Waiting
                     if (personUpNext) {
                         console.log(`---> Bumping Regular Customer #${personUpNext.id} back to Waiting.`);
-                        await supabase
-                            .from('queue_entries')
-                            .update({ status: 'Waiting' })
-                            .eq('id', personUpNext.id);
+                        await supabase.from('queue_entries').update({ status: 'Waiting' }).eq('id', personUpNext.id);
                     }
                 }
 
-                // 3. INSERT THE APPOINTMENT INTO QUEUE
+                // Insert into Queue
                 const { data: newEntry, error: insertError } = await supabase
                     .from('queue_entries')
                     .insert({
@@ -2395,37 +2392,26 @@ cron.schedule('*/5 * * * *', async () => { // Runs every 5 minutes
                         customer_email: appt.customer_email,
                         user_id: appt.user_id,
                         service_id: appt.service_id,
-                        status: initialStatus,  // <--- Uses the calculated status
-                        is_vip: true,           // Always VIP
-                        is_confirmed: true      // Already confirmed
-                    })
-                    .select()
-                    .single();
+                        status: initialStatus,
+                        is_vip: true,
+                        is_confirmed: true
+                    }).select().single();
 
-                if (insertError) {
-                    console.error("Failed to insert appointment:", insertError);
-                    continue;
-                }
-
-                // 4. Mark appointment as converted
-                await supabase.from('appointments')
-                    .update({ is_converted_to_queue: true })
-                    .eq('id', appt.id);
-
-                // 5. SEND NOTIFICATIONS
-                // If they went straight to 'In Progress' or 'Up Next', notify them!
-                if (initialStatus === 'In Progress' || initialStatus === 'Up Next') {
-                    // We use your existing notification helper
-                    if (newEntry) {
-                         processUpNextNotification(newEntry).catch(err => 
-                            console.error("Notif error:", err.message)
-                        );
+                if (!insertError) {
+                    // Mark as converted
+                    await supabase.from('appointments')
+                        .update({ is_converted_to_queue: true })
+                        .eq('id', appt.id);
+                        
+                    // Notify
+                    if (initialStatus !== 'Waiting') {
+                         processUpNextNotification(newEntry);
                     }
                 }
             }
         }
     } catch (e) {
-        console.error("[Cron] Error processing appointments:", e);
+        console.error("[Cron] Error:", e);
     }
 });
 
