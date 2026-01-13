@@ -2686,6 +2686,7 @@ app.get('/api/reports/my/:userId', async (req, res) => {
 
 /**
  * ENDPOINT: Get Barber's Upcoming Appointments
+ * FIXED: Now fetches 'pending' appointments so the barber can approve them.
  */
 app.get('/api/appointments/barber/:barberId', async (req, res) => {
     const { barberId } = req.params;
@@ -2694,7 +2695,6 @@ app.get('/api/appointments/barber/:barberId', async (req, res) => {
     try {
         // Fetch confirmed appointments for today and the future
         const now = new Date();
-        // Reset time to start of today to show today's bookings too
         now.setHours(0,0,0,0); 
 
         const { data, error } = await supabase
@@ -2709,9 +2709,11 @@ app.get('/api/appointments/barber/:barberId', async (req, res) => {
                 services(name, duration_minutes)
             `)
             .eq('barber_id', barberId)
-            .eq('status', 'confirmed') // Only show confirmed bookings
-            .gte('scheduled_time', now.toISOString()) // Today onwards
-            .order('scheduled_time', { ascending: true }); // Soonest first
+            // 🔴 OLD CODE: .eq('status', 'confirmed') 
+            // 🟢 NEW CODE: Fetch BOTH confirmed and pending
+            .in('status', ['confirmed', 'pending']) 
+            .gte('scheduled_time', now.toISOString()) 
+            .order('scheduled_time', { ascending: true }); 
 
         if (error) throw error;
         res.json(data || []);
