@@ -2332,49 +2332,96 @@ cron.schedule('0 19 * * *', async () => { // 19:00 = 7:00 PM
     }
 }, { timezone: "Asia/Manila" });
 
-// --- CRON: Process Upcoming Appointments ---
+// --- CRON: Process Upcoming Appointments (Smart Auto-Chair) ---
 cron.schedule('*/5 * * * *', async () => { // Runs every 5 minutes
     console.log('[Cron] Checking for upcoming appointments...');
 
     const now = new Date();
-    const thirtyMinsFromNow = new Date(now.getTime() + 30 * 60000);
+    // Look ahead 30 minutes (or change to 10 if you want it tighter)
+    const lookAheadTime = new Date(now.getTime() + 30 * 60000);
 
     try {
-        // Find confirmed appointments due soon that haven't been queued yet
+        // 1. Find confirmed appointments due soon that aren't in the queue yet
         const { data: dueAppointments } = await supabase
             .from('appointments')
             .select('*')
-            .eq('status', 'confirmed')
+            .in('status', ['confirmed']) // Only confirmed ones
             .eq('is_converted_to_queue', false)
-            .lte('scheduled_time', thirtyMinsFromNow.toISOString())
+            .lte('scheduled_time', lookAheadTime.toISOString())
             .gte('scheduled_time', now.toISOString());
 
         if (dueAppointments && dueAppointments.length > 0) {
             for (const appt of dueAppointments) {
-                console.log(`[Cron] Moving Appointment #${appt.id} to Live Queue...`);
+                console.log(`[Cron] Processing Appointment #${appt.id} for Barber ${appt.barber_id}...`);
 
-                // 1. Add to Queue as VIP (Status starts as 'Waiting')
-                await supabase.from('queue_entries').insert({
-                    barber_id: appt.barber_id,
-                    customer_name: `${appt.customer_name} (Appointment)`,
-                    customer_email: appt.customer_email,
-                    user_id: appt.user_id,
-                    service_id: appt.service_id,
-                    status: 'Waiting', // Enters waiting list first
-                    is_vip: true,      // Marked as VIP to jump to front of line
-                    is_confirmed: true
-                });
+                // 2. CHECK THE CHAIR STATUS
+                const { data: activeQueue } = await supabase
+                    .from('queue_entries')
+                    .select('id, status')
+                    .eq('barber_id', appt.barber_id)
+                    .in('status', ['In Progress', 'Up Next']);
 
-                // 2. Mark appointment as converted so we don't add it twice
+                const personInChair = activeQueue.find(q => q.status === 'In Progress');
+                const personUpNext = activeQueue.find(q => q.status === 'Up Next');
+
+                let initialStatus = 'Waiting';
+
+                // --- LOGIC: CHAIR CHECK ---
+                if (!personInChair) {
+                    // CASE A: Chair is Empty -> GO STRAIGHT TO CHAIR
+                    console.log(`---> Chair empty. Auto-seating Appointment #${appt.id}.`);
+                    initialStatus = 'In Progress';
+                } else {
+                    // CASE B: Chair Taken -> FORCE INTO UP NEXT
+                    console.log(`---> Chair taken. Forcing Appointment #${appt.id} to Up Next.`);
+                    initialStatus = 'Up Next';
+
+                    // If someone is ALREADY Up Next, kick them back to Waiting
+                    if (personUpNext) {
+                        console.log(`---> Bumping Regular Customer #${personUpNext.id} back to Waiting.`);
+                        await supabase
+                            .from('queue_entries')
+                            .update({ status: 'Waiting' })
+                            .eq('id', personUpNext.id);
+                    }
+                }
+
+                // 3. INSERT THE APPOINTMENT INTO QUEUE
+                const { data: newEntry, error: insertError } = await supabase
+                    .from('queue_entries')
+                    .insert({
+                        barber_id: appt.barber_id,
+                        customer_name: `${appt.customer_name} (Booked)`,
+                        customer_email: appt.customer_email,
+                        user_id: appt.user_id,
+                        service_id: appt.service_id,
+                        status: initialStatus,  // <--- Uses the calculated status
+                        is_vip: true,           // Always VIP
+                        is_confirmed: true      // Already confirmed
+                    })
+                    .select()
+                    .single();
+
+                if (insertError) {
+                    console.error("Failed to insert appointment:", insertError);
+                    continue;
+                }
+
+                // 4. Mark appointment as converted
                 await supabase.from('appointments')
                     .update({ is_converted_to_queue: true })
                     .eq('id', appt.id);
 
-                // --- 3. THE FIX: Trigger Auto-Fill Immediately ---
-                // This checks if "Up Next" is empty. Since this new guy is a VIP,
-                // he will immediately be promoted to "Up Next" (or "In Progress") if a slot is free.
-                console.log(`[Cron] Triggering auto-fill for Barber ${appt.barber_id}...`);
-                await supabase.rpc('auto_fill_up_next_v2', { p_barber_id: appt.barber_id });
+                // 5. SEND NOTIFICATIONS
+                // If they went straight to 'In Progress' or 'Up Next', notify them!
+                if (initialStatus === 'In Progress' || initialStatus === 'Up Next') {
+                    // We use your existing notification helper
+                    if (newEntry) {
+                         processUpNextNotification(newEntry).catch(err => 
+                            console.error("Notif error:", err.message)
+                        );
+                    }
+                }
             }
         }
     } catch (e) {
