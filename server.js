@@ -2756,6 +2756,48 @@ app.get('/api/appointments/barber/:barberId', async (req, res) => {
     }
 });
 
+app.get('/api/test/process-appointments', async (req, res) => {
+    console.log('[Manual Trigger] Checking for missed appointments...');
+    const now = new Date();
+    const lookBack = new Date(now.getTime() - 24 * 60 * 60 * 1000); // Look back 24 hours
+
+    try {
+        // Find confirmed appointments that haven't been queued yet
+        const { data: missed, error } = await supabase
+            .from('appointments')
+            .select('*')
+            .in('status', ['confirmed'])
+            .eq('is_converted_to_queue', false)
+            .gte('scheduled_time', lookBack.toISOString());
+
+        if (error) throw error;
+
+        const results = [];
+        for (const appt of missed) {
+            // FORCE INSERT TO QUEUE
+            const { data: newEntry } = await supabase.from('queue_entries').insert({
+                barber_id: appt.barber_id,
+                customer_name: `${appt.customer_name} (Booked)`,
+                customer_email: appt.customer_email,
+                user_id: appt.user_id,
+                service_id: appt.service_id,
+                status: 'Up Next', // Force to Up Next since it's late
+                is_vip: true,
+                is_confirmed: true
+            }).select().single();
+
+            if (newEntry) {
+                await supabase.from('appointments').update({ is_converted_to_queue: true }).eq('id', appt.id);
+                results.push(`Converted ${appt.customer_name}`);
+            }
+        }
+
+        res.json({ success: true, processed: results });
+
+    } catch (e) {
+        res.json({ error: e.message });
+    }
+});
 
 // --- Start the server ---
 const PORT = process.env.PORT || 3001;
