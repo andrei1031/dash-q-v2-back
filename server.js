@@ -815,7 +815,7 @@ app.get('/api/services', async (req, res) => {
 
 
 /**
- * ENDPOINT: Get Barbers with Ratings & ACCURATE Queue Size
+ * ENDPOINT: Get Barbers with Ratings & PRECISE Queue Size
  */
 app.get('/api/barbers', async (req, res) => {
     try {
@@ -823,18 +823,22 @@ app.get('/api/barbers', async (req, res) => {
         const { data: barbers, error } = await supabase.rpc('get_available_barbers_with_ratings');
         if (error) throw error;
 
-        // 2. Get ACTIVE Physical Queue Counts
-        // STRICT FILTER: Only 'Waiting', 'Up Next', 'In Progress'
+        // 2. Get ACTIVE Queue Counts
+        // NOTE: We only count 'Waiting' and 'Up Next'. 
+        // We DO NOT count 'In Progress' here, so users see how many are actually WAITING.
         const { data: queueCounts, error: qError } = await supabase
             .from('queue_entries')
             .select('barber_id, head_count')
-            .in('status', ['Waiting', 'Up Next', 'In Progress']); // <--- Excludes 'Done', 'Cancelled', and Future Appts
+            .in('status', ['Waiting', 'Up Next']); 
 
         if (qError) throw qError;
 
-        // 3. Match them up
+        // 3. Match them up (Strict Integer Comparison)
         const barbersWithCounts = barbers.map(b => {
-            const barberEntries = queueCounts?.filter(q => q.barber_id === b.id) || [];
+            const bId = parseInt(b.id); // Ensure integer
+            
+            const barberEntries = queueCounts?.filter(q => parseInt(q.barber_id) === bId) || [];
+            
             const totalHeads = barberEntries.reduce((sum, entry) => sum + (entry.head_count || 1), 0);
             
             return {
