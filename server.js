@@ -1718,7 +1718,7 @@ app.get('/api/queue/public/:barberId', async (req, res) => {
             .from('appointments')
             .select('id, scheduled_time, customer_name, status')
             .eq('barber_id', barberIdInt)
-            .eq('status', 'confirmed')
+            .in('status', ['confirmed', 'pending'])
             .eq('is_converted_to_queue', false)
             .gte('scheduled_time', startIso) // Use shifted ISO
             .lte('scheduled_time', endIso);  // Use shifted ISO
