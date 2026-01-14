@@ -815,21 +815,38 @@ app.get('/api/services', async (req, res) => {
 
 
 /**
- * ENDPOINT 1 (UPDATED): Get available barbers with STAR RATINGS
+ * ENDPOINT: Get Barbers with Ratings & ACCURATE Queue Size
  */
 app.get('/api/barbers', async (req, res) => {
-    console.log('GET /api/barbers - Request received for available barbers (with ratings)');
+    try {
+        // 1. Get Barbers
+        const { data: barbers, error } = await supabase.rpc('get_available_barbers_with_ratings');
+        if (error) throw error;
 
-    // We use the RPC function we just created in SQL
-    const { data, error } = await supabase.rpc('get_available_barbers_with_ratings');
+        // 2. Get ACTIVE Physical Queue Counts
+        // STRICT FILTER: Only 'Waiting', 'Up Next', 'In Progress'
+        const { data: queueCounts, error: qError } = await supabase
+            .from('queue_entries')
+            .select('barber_id, head_count')
+            .in('status', ['Waiting', 'Up Next', 'In Progress']); // <--- Excludes 'Done', 'Cancelled', and Future Appts
 
-    if (error) {
-        console.error('Error fetching available barbers:', error.message);
-        return res.status(500).json({ error: error.message });
+        if (qError) throw qError;
+
+        // 3. Match them up
+        const barbersWithCounts = barbers.map(b => {
+            const barberEntries = queueCounts?.filter(q => q.barber_id === b.id) || [];
+            const totalHeads = barberEntries.reduce((sum, entry) => sum + (entry.head_count || 1), 0);
+            
+            return {
+                ...b,
+                queue_length: totalHeads 
+            };
+        });
+
+        res.json(barbersWithCounts || []);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
-
-    console.log('Successfully fetched available barbers:', data);
-    res.json(data || []);
 });
 
 /**
