@@ -1006,108 +1006,93 @@ app.post('/api/signup/username', async (req, res) => {
 
 
 /**
- * ENDPOINT (UPDATED): Handle Login with BAN CHECK
+ * ENDPOINT (STRICT ROLE ENFORCEMENT): Handle Login
  */
 app.post('/api/login/username', async (req, res) => {
     const { username, password, role, pin } = req.body;
     console.log(`POST /api/login/username - Login attempt: user=${username}, role=${role}`);
+
     if (!username || !password) return res.status(400).json({ error: 'Username and password required.' });
-    const selectedRole = role || 'customer';
-    if (selectedRole === 'barber') {
-        const CORRECT_BARBER_PIN = process.env.BARBER_LOGIN_PIN;
-        if (!pin) return res.status(400).json({ error: 'Barber PIN required.' });
-        if (pin !== CORRECT_BARBER_PIN) { console.log(`Incorrect PIN for barber: ${username}`); return res.status(401).json({ error: 'Incorrect username, password, or PIN.' }); }
-    }
+
+    // Default to 'customer' if no role is sent (e.g. from old frontend code)
+    const attemptedRole = role || 'customer';
+
     try {
-        // --- MODIFIED SECTION START ---
-        // 1. Fetch ID AND is_banned status
+        // 1. Fetch Profile + Role + Ban Status
         const { data: profile, error: profileError } = await supabase
             .from('profiles')
-            .select('id, is_banned, role') // <--- Added is_banned here
+            .select('id, is_banned, role') 
             .ilike('username', username)
             .maybeSingle();
 
         if (profileError) throw profileError;
 
         if (!profile) {
-            console.log(`Username "${username}" not found.`);
             return res.status(401).json({ error: 'Incorrect username or password.' });
         }
 
         // 2. CHECK IF BANNED
         if (profile.is_banned) {
-            console.warn(`Banned user ${username} attempted login.`);
-            return res.status(403).json({ error: 'Your account has been suspended due to policy violations. Contact admin.' });
+            return res.status(403).json({ error: 'Your account has been suspended. Contact admin.' });
         }
-        // --- MODIFIED SECTION END ---
 
+        // 3. STRICT ROLE ENFORCEMENT (The Fix)
+        // If the user's DB role does not match the button they clicked, BLOCK THEM.
+        if (profile.role !== attemptedRole) {
+            console.warn(`Role Mismatch: User ${username} is '${profile.role}' but tried logging in as '${attemptedRole}'.`);
+            
+            if (profile.role === 'barber') {
+                return res.status(403).json({ error: 'Barbers must use the "Barber Login" tab.' });
+            } else if (profile.role === 'admin') {
+                return res.status(403).json({ error: 'Admins must use the Admin Portal.' });
+            } else if (profile.role === 'customer') {
+                return res.status(403).json({ error: 'Customers cannot log in here.' });
+            }
+        }
+
+        // 4. Handle Barber PIN (Only if role matches)
+        if (attemptedRole === 'barber') {
+            const CORRECT_BARBER_PIN = process.env.BARBER_LOGIN_PIN;
+            if (!pin) return res.status(400).json({ error: 'Barber PIN required.' });
+            if (pin !== CORRECT_BARBER_PIN) { 
+                return res.status(401).json({ error: 'Incorrect PIN.' }); 
+            }
+        }
+
+        // 5. Proceed with Authentication
         const userId = profile.id;
-
-        const userResponse = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, { method: 'GET', headers: { 'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`, 'apikey': SUPABASE_ANON_KEY } });
-        if (!userResponse.ok) { const body = await userResponse.text(); throw new Error(`Could not retrieve user details: ${userResponse.status} ${body}`); }
+        const userResponse = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, { 
+            method: 'GET', 
+            headers: { 'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`, 'apikey': SUPABASE_ANON_KEY } 
+        });
+        
+        if (!userResponse.ok) throw new Error('User email not found.');
         const userData = await userResponse.json();
-        if (!userData?.email) throw new Error('User email not found.');
-        const userEmail = userData.email;
+        
+        const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({ 
+            email: userData.email, 
+            password: password 
+        });
 
-        const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({ email: userEmail, password: password });
-        if (signInError) {
-            if (signInError.message.includes('Invalid login credentials')) return res.status(401).json({ error: 'Incorrect username or password.' });
-            if (signInError.message.includes('Email not confirmed')) return res.status(401).json({ error: 'Please verify your email address.' });
-            throw signInError;
-        }
+        if (signInError) return res.status(401).json({ error: 'Incorrect username or password.' });
+
+        // 6. Final Setup (Session Flags)
         const loggedInUser = signInData.user;
 
-        if (selectedRole === 'barber') {
-            console.log(`Verifying if user ${loggedInUser.id} is a barber...`);
-            const { data: barberProfile, error: barberCheckError } = await supabase.from('barber_profiles').select('id, current_session_id').eq('user_id', loggedInUser.id).maybeSingle();
-            if (barberCheckError) { console.error("Error checking barber_profiles table:", barberCheckError); throw new Error("Server error during role check."); }
-            if (!barberProfile) { console.warn(`User ${username} (${loggedInUser.id}) passed PIN but has no barber profile.`); return res.status(403).json({ error: 'Incorrect username, password, or PIN.' }); }
-            if (barberProfile.current_session_id) { console.warn(`User ${username} attempted second login. Blocking!`); return res.status(409).json({ error: 'This barber account is already signed in on another device.' }); }
-
-            // --- FIX: Update is_active to TRUE on successful login ---
-            const { error: updateAvailabilityError } = await supabase.from('barber_profiles')
-                .update({ is_active: true })
-                .eq('user_id', loggedInUser.id);
-            if (updateAvailabilityError) { console.error("Failed to set is_active flag:", updateAvailabilityError); }
-            // --- END FIX ---
-
-            const { error: updateError } = await supabase.from('profiles').update({ current_session_id: loggedInUser.id }).eq('id', loggedInUser.id);
-            if (updateError) { console.error("Failed to set session ID flag:", updateError); return res.status(500).json({ error: 'Login failed setting active status.' }); }
-            console.log(`User ${username} confirmed as a barber.`);
-        } else if (selectedRole === 'customer') {
-            // --- 1. BLOCK ADMINS ---
-            if (profile.role === 'admin') {
-                return res.status(403).json({ error: 'Admins must log in via the Admin Portal.' });
-            }
-
-            // --- 2. BLOCK BARBERS (Existing Logic) ---
+        if (attemptedRole === 'barber') {
+            // Check if barber profile exists
             const { data: barberProfile } = await supabase.from('barber_profiles').select('id').eq('user_id', loggedInUser.id).maybeSingle();
-            if (barberProfile) { 
-                return res.status(403).json({ error: 'You must log in using the "Barber" role.' }); 
-            }
-            
-            console.log(`User ${username} confirmed as a customer.`);
+            if (!barberProfile) return res.status(403).json({ error: 'No barber profile found for this user.' });
 
-            // <--- ADD THIS BLOCK --->
-        } else if (selectedRole === 'admin') {
-            // 1. Fetch the user's profile to check the DB role
-            const { data: adminProfile, error: adminCheckError } = await supabase
-                .from('profiles')
-                .select('role')
-                .eq('id', loggedInUser.id)
-                .single();
-
-            if (adminCheckError || adminProfile?.role !== 'admin') {
-                console.warn(`User ${username} attempted ADMIN login but is '${adminProfile?.role || 'unknown'}'.`);
-                return res.status(403).json({ error: 'Access Denied: You do not have Administrator privileges.' });
-            }
-            console.log(`User ${username} confirmed as ADMIN.`);
+            // Set Active
+            await supabase.from('barber_profiles').update({ is_active: true }).eq('user_id', loggedInUser.id);
         }
-        console.log(`Login successful for user: ${username}, ID: ${loggedInUser.id} as role: ${selectedRole}`);
+
         res.json({ user: loggedInUser });
+
     } catch (error) {
-        console.error('Username login failed:', error);
-        res.status(500).json({ error: 'Login failed due to a server error.' });
+        console.error('Login failed:', error);
+        res.status(500).json({ error: 'Server error during login.' });
     }
 });
 
