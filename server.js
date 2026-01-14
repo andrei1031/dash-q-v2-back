@@ -1674,7 +1674,8 @@ app.get('/api/analytics/:barberId', async (req, res) => {
         const currentQueueSize = queueData?.reduce((sum, item) => sum + (item.head_count || 1), 0) || 0;
 
         // 4. Carbon (Dummy calculation for now)
-        const carbonSavedToday = totalCutsToday * 5; 
+        // NEW RULE: Flat +5g reward if at least 1 cut is done today.
+        const carbonSavedToday = totalCutsToday > 0 ? 5 : 0;
 
         res.json({
             totalEarningsToday,
