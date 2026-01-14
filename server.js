@@ -84,37 +84,31 @@ async function enforceQueueLogic(barberId) {
         // Priority: VIPs (true) appear before Regulars (false/null).
         // Tie-breaker: Oldest 'created_at' comes first.
         const { data: waitingList } = await supabase
-            .from('queue_entries')
-            .select('*')
-            .eq('barber_id', barberId)
-            .eq('status', 'Waiting')
-            .order('is_vip', { ascending: false }) 
-            .order('created_at', { ascending: true })
-            .limit(1);
+        .from('queue_entries')
+        .select('*')
+        .eq('barber_id', barberId)
+        .eq('status', 'Waiting')
+        .order('is_confirmed', { ascending: false }) // <--- FIX: Appointments (Confirmed) First!
+        .order('is_vip', { ascending: false })       // Then VIP Walk-ins
+        .order('created_at', { ascending: true })    // Then whoever arrived first
+        .limit(1);
 
         const topCandidate = waitingList?.length > 0 ? waitingList[0] : null;
 
-        // --- SCENARIO A: VIP BUMP (The Priority Fix) ---
-        // If "Up Next" exists but is NOT VIP, and the top waiter IS VIP... SWAP THEM.
-        if (currentUpNext && !currentUpNext.is_vip && topCandidate && topCandidate.is_vip) {
-            console.log(`[QueueLogic] 👑 VIP #${topCandidate.id} is bumping Regular #${currentUpNext.id}!`);
+        if (currentUpNext && topCandidate) {
+            const upNextScore = (currentUpNext.is_confirmed ? 2 : 0) + (currentUpNext.is_vip ? 1 : 0);
+            const candidateScore = (topCandidate.is_confirmed ? 2 : 0) + (topCandidate.is_vip ? 1 : 0);
 
-            // 1. Demote the Regular user back to Waiting
-            // (They keep their original created_at, so they stay at the front of the Regular line)
-            await supabase
-                .from('queue_entries')
-                .update({ status: 'Waiting' })
-                .eq('id', currentUpNext.id);
-
-            // 2. Promote the VIP to Up Next
-            const { data: newUpNext } = await supabase
-                .from('queue_entries')
-                .update({ status: 'Up Next' })
-                .eq('id', topCandidate.id)
-                .select()
-                .single();
-
-            return [newUpNext];
+            if (candidateScore > upNextScore) {
+                console.log(`[QueueLogic] 🚀 High Priority #${topCandidate.id} is bumping #${currentUpNext.id}!`);
+                
+                // Demote current "Up Next"
+                await supabase.from('queue_entries').update({ status: 'Waiting' }).eq('id', currentUpNext.id);
+                
+                // Promote the Winner
+                const { data: newUpNext } = await supabase.from('queue_entries').update({ status: 'Up Next' }).eq('id', topCandidate.id).select().single();
+                return [newUpNext];
+            }
         }
 
         // --- SCENARIO B: Empty Chair Auto-Fill ---
@@ -1749,9 +1743,14 @@ app.get('/api/queue/public/:barberId', async (req, res) => {
         
         // Combine Waiting Walk-ins + Ghost Slots
         const combinedWaiting = [...waiting, ...ghostSlots].sort((a, b) => {
-            // Priority Rule: VIP Walk-ins first, then everything else by time
-            if (a.is_vip && !b.is_vip) return -1;
-            if (!a.is_vip && b.is_vip) return 1;
+            // 1. Appointments/Reserved slots ALWAYS win if they are "Ghost" (Future) or "Confirmed" (Active)
+            const aScore = (a.is_confirmed || a.status === 'Reserved') ? 2 : (a.is_vip ? 1 : 0);
+            const bScore = (b.is_confirmed || b.status === 'Reserved') ? 2 : (b.is_vip ? 1 : 0);
+
+            if (aScore > bScore) return -1;
+            if (aScore < bScore) return 1;
+
+            // 2. Tie-breaker: Time
             return new Date(a.created_at) - new Date(b.created_at);
         });
 
@@ -2374,13 +2373,16 @@ cron.schedule('*/5 * * * *', async () => { // Runs every 5 minutes
                     console.log(`---> Chair empty. Auto-seating Appointment #${appt.id}.`);
                     initialStatus = 'In Progress';
                 } else {
-                    console.log(`---> Chair taken. Forcing Appointment #${appt.id} to Up Next.`);
+                    console.log(`---> Chair taken. CLEARING WAY for Appointment #${appt.id}.`);
                     initialStatus = 'Up Next';
 
-                    if (personUpNext) {
-                        console.log(`---> Bumping Regular Customer #${personUpNext.id} back to Waiting.`);
-                        await supabase.from('queue_entries').update({ status: 'Waiting' }).eq('id', personUpNext.id);
-                    }
+                    // ☢️ NUCLEAR OPTION: Kick ANYONE currently in 'Up Next' back to 'Waiting'
+                    // This guarantees the slot is empty for the Appointment.
+                    await supabase
+                        .from('queue_entries')
+                        .update({ status: 'Waiting' })
+                        .eq('barber_id', appt.barber_id)
+                        .eq('status', 'Up Next'); 
                 }
 
                 // Insert into Queue
