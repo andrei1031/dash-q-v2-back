@@ -2626,11 +2626,10 @@ app.get('/api/admin/reports', async (req, res) => {
 
 /**
  * FEATURE: Admin Get All Upcoming Appointments
- * Returns all confirmed bookings across the entire shop.
+ * FIXED: Now fetches 'pending' bookings too so Admin can see everything.
  */
 app.get('/api/admin/appointments', async (req, res) => {
     try {
-        // Fetch all future confirmed appointments
         const now = new Date();
         const { data, error } = await supabase
             .from('appointments')
@@ -2644,9 +2643,11 @@ app.get('/api/admin/appointments', async (req, res) => {
                 barber_profiles(full_name),
                 services(name, duration_minutes)
             `)
-            .eq('status', 'confirmed') // Only confirmed
-            .gte('scheduled_time', now.toISOString()) // Future only
-            .order('scheduled_time', { ascending: true }); // Soonest first
+            // 🔴 OLD: .eq('status', 'confirmed') 
+            // 🟢 NEW: Allow Pending too!
+            .in('status', ['confirmed', 'pending']) 
+            .gte('scheduled_time', now.toISOString()) 
+            .order('scheduled_time', { ascending: true });
 
         if (error) throw error;
         res.json(data || []);
