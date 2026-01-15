@@ -7,6 +7,8 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const BARBER_SIGNUP_CODE = process.env.BARBER_SIGNUP_CODE; // New
 const BARBER_LOGIN_PIN = process.env.BARBER_LOGIN_PIN;     // New
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;   // <--- NEW
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
 
 // --- VALIDATION CHECK ---
 const missingVars = [];
@@ -19,6 +21,15 @@ if (!BARBER_LOGIN_PIN) missingVars.push('BARBER_LOGIN_PIN');
 if (missingVars.length > 0) {
     console.error(`FATAL ERROR: Missing required environment variables: ${missingVars.join(', ')}`);
     process.exit(1); // Stop the server if secrets are missing
+}
+
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+    webpush.setVapidDetails(
+        'mailto:your-email@example.com',
+        VAPID_PUBLIC_KEY,
+        VAPID_PRIVATE_KEY
+    );
+    console.log("✅ Web Push Configured");
 }
 
 // --- Now load other modules ---
@@ -63,6 +74,16 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
 });
+
+async function sendPush(subscription, title, body) {
+    if (!subscription) return;
+    try {
+        await webpush.sendNotification(subscription, JSON.stringify({ title, body }));
+        console.log(`[Push] Sent: ${title}`);
+    } catch (error) {
+        console.error("[Push] Failed:", error.message);
+    }
+}
 
 /**
  * ENFORCE QUEUE LOGIC (VIP SWAP & AUTO-FILL)
@@ -140,6 +161,13 @@ async function enforceQueueLogic(barberId) {
  * Handles sending the email and marking the database flag to prevent duplicates.
  */
 async function processUpNextNotification(entry) {
+
+    if (entry.push_subscription && !entry.notified_up_next) {
+        sendPush(entry.push_subscription, "You're Up Next!", `Hi ${entry.customer_name}, please head to the shop!`);
+    }
+    await supabase.from('queue_entries').update({ notified_up_next: true }).eq('id', entry.id);
+    console.log(`[Email Job] Sent push notification for Queue #${entry.id}, skipping email.`);
+    
     try {
         // 1. Get Context (Barber Name, Service Name)
         const context = await getNotificationContext(entry);
@@ -691,36 +719,54 @@ app.put('/api/appointments/approve', async (req, res) => {
 });
 
 /**
- * ENDPOINT: Send Chat Message (Replaces Socket.IO 'chat message' event)
- * Handles profanity filtering and database insertion.
+ * ENDPOINT: Subscribe to Push Notifications
+ * Customer sends their browser subscription object here.
+ */
+app.post('/api/push/subscribe', async (req, res) => {
+    const { queueId, subscription } = req.body;
+    if (!queueId || !subscription) return res.status(400).json({ error: 'Missing data' });
+
+    try {
+        await supabase
+            .from('queue_entries')
+            .update({ push_subscription: subscription }) // Save JSON to DB
+            .eq('id', queueId);
+        res.json({ message: 'Subscribed to push!' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * ENDPOINT: Send Chat Message (Triggers Push)
  */
 app.post('/api/chat/send', async (req, res) => {
     const { senderId, queueId, message } = req.body;
-
-    if (!senderId || !queueId || !message) {
-        return res.status(400).json({ error: 'Missing required fields.' });
-    }
-
-    // 1. Filter Profanity
-    if (filter.isProfane(message)) {
-        console.log(`[Chat] Profane message from ${senderId} BLOCKED.`);
-        return res.status(400).json({ error: 'Message contains inappropriate language.' });
-    }
+    if (!senderId || !queueId || !message) return res.status(400).json({ error: 'Missing fields.' });
 
     try {
-        // 2. Log to Database (Supabase Realtime will pick this up automatically!)
-        const { data, error } = await supabase.from('chat_messages').insert({
+        // 1. Save Message
+        const { data: msg, error } = await supabase.from('chat_messages').insert({
             queue_entry_id: parseInt(queueId),
             sender_id: senderId,
             message: message,
         }).select().single();
-
         if (error) throw error;
 
-        res.status(200).json(data);
-    } catch (error) {
-        console.error("Chat insert error:", error.message);
-        res.status(500).json({ error: 'Failed to send message.' });
+        // 2. Trigger Push (If sender is Barber, notify Customer)
+        const { data: entry } = await supabase
+            .from('queue_entries')
+            .select('user_id, push_subscription')
+            .eq('id', queueId)
+            .single();
+
+        if (entry && entry.push_subscription && senderId !== entry.user_id) {
+            sendPush(entry.push_subscription, "New Message", message);
+        }
+
+        res.json(msg);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 
@@ -1511,11 +1557,16 @@ app.put('/api/queue/next', async (req, res) => {
         } else {
             console.log("[RPC v5] auto_fill_up_next_v2 found no one to promote (or slot was full).");
         }
-
-        res.json(inProgressCustomer || { message: "Update successful" });
-    } catch (error) {
-        console.error("[RPC v5] Overall endpoint error:", error);
-        res.status(500).json({ error: "Server error calling next customer." });
+await supabase.rpc('call_next_customer', { p_barber_id: barber_id, p_queue_id: queue_id });
+        const promoted = await enforceQueueLogic(barber_id); // Auto-fill
+        if (promoted[0]) {
+            // Fetch subscription for the promoted user
+            const { data: fullEntry } = await supabase.from('queue_entries').select('*').eq('id', promoted[0].id).single();
+            processUpNextNotification(fullEntry);
+        }
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -1663,6 +1714,7 @@ app.get('/api/analytics/:barberId', async (req, res) => {
         // Sum up heads and price
         const totalEarningsToday = todayStats?.reduce((sum, item) => sum + (item.price || 0), 0) || 0;
         const totalCutsToday = todayStats?.reduce((sum, item) => sum + (item.head_count || 1), 0) || 0;
+        const { count } = await supabase.from('queue_entries').select('*', { count: 'exact', head: true }).eq('barber_id', barberId).in('status', ['Waiting', 'Up Next', 'In Progress']);
 
         // 3. Queue Size (Count heads in Waiting/Up Next)
         const { data: queueData } = await supabase
@@ -1680,14 +1732,12 @@ app.get('/api/analytics/:barberId', async (req, res) => {
         res.json({
             totalEarningsToday,
             totalCutsToday,
-            currentQueueSize,
+            currentQueueSize: count || 0,
             carbonSavedToday,
             showEarningsAnalytics: profile?.show_earnings_analytics ?? true
         });
-
-    } catch (error) {
-        console.error('Error fetching analytics:', error.message);
-        res.status(500).json({ error: 'Failed to fetch analytics.' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
