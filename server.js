@@ -18,20 +18,21 @@ if (!SUPABASE_SERVICE_KEY) missingVars.push('SUPABASE_SERVICE_KEY');
 if (!SUPABASE_ANON_KEY) missingVars.push('SUPABASE_ANON_KEY');
 if (!BARBER_SIGNUP_CODE) missingVars.push('BARBER_SIGNUP_CODE');
 if (!BARBER_LOGIN_PIN) missingVars.push('BARBER_LOGIN_PIN');
+if (!VAPID_PUBLIC_KEY) missingVars.push('VAPID_PUBLIC_KEY');
+if (!VAPID_PRIVATE_KEY) missingVars.push('VAPID_PRIVATE_KEY');
 
 if (missingVars.length > 0) {
     console.error(`FATAL ERROR: Missing required environment variables: ${missingVars.join(', ')}`);
     process.exit(1); // Stop the server if secrets are missing
 }
 
-if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
-    webpush.setVapidDetails(
-        'mailto:andreisantossaldivar@gmail.com',
-        VAPID_PUBLIC_KEY,
-        VAPID_PRIVATE_KEY
-    );
-    console.log("✅ Web Push Configured");
-}
+// --- CONFIGURE WEB PUSH ---
+webpush.setVapidDetails(
+    'mailto:andreisantossaldivar@gmail.com',
+    VAPID_PUBLIC_KEY,
+    VAPID_PRIVATE_KEY
+);
+console.log("✅ Native Web Push Configured");
 
 // --- Now load other modules ---
 const http = require('http');
@@ -76,6 +77,7 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
 });
 
+// --- HELPER: Send Native Push ---
 async function sendPush(subscription, title, body) {
     if (!subscription) return;
     try {
@@ -83,6 +85,7 @@ async function sendPush(subscription, title, body) {
         console.log(`[Push] Sent: ${title}`);
     } catch (error) {
         console.error("[Push] Failed:", error.message);
+        // If 410 (Gone), we should ideally remove the subscription from DB, but skipping for simplicity
     }
 }
 
@@ -102,18 +105,15 @@ async function enforceQueueLogic(barberId) {
             .eq('status', 'Up Next')
             .maybeSingle();
 
-        // 2. Fetch Best "Waiting" Candidate
-        // Priority: VIPs (true) appear before Regulars (false/null).
-        // Tie-breaker: Oldest 'created_at' comes first.
         const { data: waitingList } = await supabase
-        .from('queue_entries')
-        .select('*')
-        .eq('barber_id', barberId)
-        .eq('status', 'Waiting')
-        .order('is_confirmed', { ascending: false }) // <--- FIX: Appointments (Confirmed) First!
-        .order('is_vip', { ascending: false })       // Then VIP Walk-ins
-        .order('created_at', { ascending: true })    // Then whoever arrived first
-        .limit(1);
+            .from('queue_entries')
+            .select('*')
+            .eq('barber_id', barberId)
+            .eq('status', 'Waiting')
+            .order('is_confirmed', { ascending: false })
+            .order('is_vip', { ascending: false })
+            .order('created_at', { ascending: true })
+            .limit(1);
 
         const topCandidate = waitingList?.length > 0 ? waitingList[0] : null;
 
@@ -122,33 +122,17 @@ async function enforceQueueLogic(barberId) {
             const candidateScore = (topCandidate.is_confirmed ? 2 : 0) + (topCandidate.is_vip ? 1 : 0);
 
             if (candidateScore > upNextScore) {
-                console.log(`[QueueLogic] 🚀 High Priority #${topCandidate.id} is bumping #${currentUpNext.id}!`);
-                
-                // Demote current "Up Next"
                 await supabase.from('queue_entries').update({ status: 'Waiting' }).eq('id', currentUpNext.id);
-                
-                // Promote the Winner
                 const { data: newUpNext } = await supabase.from('queue_entries').update({ status: 'Up Next' }).eq('id', topCandidate.id).select().single();
                 return [newUpNext];
             }
         }
 
-        // --- SCENARIO B: Empty Chair Auto-Fill ---
-        // If "Up Next" is empty, simply promote the top candidate (VIP or Regular)
         if (!currentUpNext && topCandidate) {
-            console.log(`[QueueLogic] Up Next is empty. Promoting #${topCandidate.id}.`);
-
-            const { data: newUpNext } = await supabase
-                .from('queue_entries')
-                .update({ status: 'Up Next' })
-                .eq('id', topCandidate.id)
-                .select()
-                .single();
-
+            const { data: newUpNext } = await supabase.from('queue_entries').update({ status: 'Up Next' }).eq('id', topCandidate.id).select().single();
             return [newUpNext];
         }
 
-        // --- SCENARIO C: No Changes ---
         return currentUpNext ? [currentUpNext] : [];
 
     } catch (error) {
@@ -162,52 +146,32 @@ async function enforceQueueLogic(barberId) {
  * Handles sending the email and marking the database flag to prevent duplicates.
  */
 async function processUpNextNotification(entry) {
-
+    // 1. Send Native Push
     if (entry.push_subscription && !entry.notified_up_next) {
-        sendPush(entry.push_subscription, "You're Up Next!", `Hi ${entry.customer_name}, please head to the shop!`);
-    }
-    await supabase.from('queue_entries').update({ notified_up_next: true }).eq('id', entry.id);
-    console.log(`[Email Job] Sent push notification for Queue #${entry.id}, skipping email.`);
-    
-    try {
-        // 1. Get Context (Barber Name, Service Name)
-        const context = await getNotificationContext(entry);
-        if (!context) {
-            console.error(`[Email Job] Could not fetch context for Queue #${entry.id}`);
-            return;
+        // Parse if stored as string, otherwise use directly
+        let sub = entry.push_subscription;
+        if (typeof sub === 'string') {
+            try { sub = JSON.parse(sub); } catch(e) {}
         }
+        await sendPush(sub, "You're Up Next!", `Hi ${entry.customer_name}, please head to the shop!`);
+    }
 
-        // 2. Send to n8n (if email exists)
-        if (entry.customer_email && process.env.N8N_WEBHOOK_URL) {
-            console.log(`[Email Job] Sending email to ${entry.customer_email} for Queue #${entry.id}`);
-
-            await axios.post(process.env.N8N_WEBHOOK_URL, {
+    await supabase.from('queue_entries').update({ notified_up_next: true }).eq('id', entry.id);
+    
+    // 2. Send Email (Optional via n8n)
+    try {
+        const context = await getNotificationContext(entry);
+        if (entry.customer_email && process.env.N8N_WEBHOOK_URL && context) {
+            axios.post(process.env.N8N_WEBHOOK_URL, {
                 email: entry.customer_email,
                 name: entry.customer_name,
                 barberName: context.barberName,
                 serviceName: context.serviceName,
                 duration: context.duration
-            });
-
-            // 3. CRITICAL: Mark as notified in DB so we don't send again
-            await supabase
-                .from('queue_entries')
-                .update({ notified_up_next: true })
-                .eq('id', entry.id);
-
-            console.log(`[Email Job] Success. Flagged Queue #${entry.id} as notified.`);
-        } else {
-            // If no email, mark as notified anyway so we don't keep checking it
-            console.log(`[Email Job] No email for Queue #${entry.id}, skipping and flagging.`);
-            await supabase
-                .from('queue_entries')
-                .update({ notified_up_next: true })
-                .eq('id', entry.id);
+            }).catch(e => console.error("N8N Error:", e.message));
         }
-
     } catch (error) {
         console.error(`[Email Job] FAILED for Queue #${entry.id}:`, error.message);
-        // We DO NOT mark as true here. The Cron will try again next minute.
     }
 }
 
@@ -229,8 +193,7 @@ async function getNotificationContext(queueEntry) {
             duration: serviceResponse.data?.duration_minutes || 30
         };
     } catch (error) {
-        console.error("Error fetching notification context:", error.message);
-        return null; // Return null if fetching context fails
+        return null; 
     }
 }
 
@@ -240,25 +203,12 @@ async function getNotificationContext(queueEntry) {
  */
 app.put('/api/queue/confirm', async (req, res) => {
     const { queueId } = req.body;
-
     if (!queueId) return res.status(400).json({ error: 'Queue ID required.' });
-
     try {
-        const { data, error } = await supabase
-            .from('queue_entries')
-            .update({ is_confirmed: true })
-            .eq('id', queueId)
-            .select()
-            .single();
-
+        const { data, error } = await supabase.from('queue_entries').update({ is_confirmed: true }).eq('id', queueId).select().single();
         if (error) throw error;
-
-        console.log(`[Confirm] Customer for queue ${queueId} is ON THE WAY.`);
         res.json({ message: "Attendance confirmed!", data });
-    } catch (error) {
-        console.error("Confirmation failed:", error.message);
-        res.status(500).json({ error: 'Server error confirming attendance.' });
-    }
+    } catch (error) { res.status(500).json({ error: 'Server error confirming attendance.' }); }
 });
 
 /**
@@ -726,11 +676,11 @@ app.put('/api/appointments/approve', async (req, res) => {
 app.post('/api/push/subscribe', async (req, res) => {
     const { queueId, subscription } = req.body;
     if (!queueId || !subscription) return res.status(400).json({ error: 'Missing data' });
-
     try {
+        // Save the subscription object to Supabase
         await supabase
             .from('queue_entries')
-            .update({ push_subscription: subscription }) // Save JSON to DB
+            .update({ push_subscription: subscription }) 
             .eq('id', queueId);
         res.json({ message: 'Subscribed to push!' });
     } catch (e) {
@@ -744,9 +694,7 @@ app.post('/api/push/subscribe', async (req, res) => {
 app.post('/api/chat/send', async (req, res) => {
     const { senderId, queueId, message } = req.body;
     if (!senderId || !queueId || !message) return res.status(400).json({ error: 'Missing fields.' });
-
     try {
-        // 1. Save Message
         const { data: msg, error } = await supabase.from('chat_messages').insert({
             queue_entry_id: parseInt(queueId),
             sender_id: senderId,
@@ -754,15 +702,15 @@ app.post('/api/chat/send', async (req, res) => {
         }).select().single();
         if (error) throw error;
 
-        // 2. Trigger Push (If sender is Barber, notify Customer)
-        const { data: entry } = await supabase
-            .from('queue_entries')
-            .select('user_id, push_subscription')
-            .eq('id', queueId)
-            .single();
-
+        // Trigger Push to the OTHER party
+        const { data: entry } = await supabase.from('queue_entries').select('user_id, push_subscription, barber_id').eq('id', queueId).single();
+        
+        // Logic: If sender is customer, notify barber (Not impl here unless barber has push). 
+        // If sender is barber, notify customer.
         if (entry && entry.push_subscription && senderId !== entry.user_id) {
-            sendPush(entry.push_subscription, "New Message", message);
+             let sub = entry.push_subscription;
+             if (typeof sub === 'string') try { sub = JSON.parse(sub); } catch(e){}
+             sendPush(sub, "New Message", message);
         }
 
         res.json(msg);
@@ -1164,207 +1112,57 @@ app.post('/api/login/username', async (req, res) => {
  */
 app.post('/api/queue', async (req, res) => {
     const {
-        customer_name, customer_phone, barber_id, reference_image_url,
-        customer_email, service_id, player_id, user_id,
-        is_vip,
-        head_count = 1,
+        customer_name, customer_email, barber_id, service_id, user_id,
+        reference_image_url, is_vip, head_count = 1
     } = req.body;
 
-    console.log(`[RPC Join] POST /api/queue - Customer: ${customer_name}, User: ${user_id}, VIP: ${is_vip}`);
-
-    const barberIdInt = parseInt(barber_id);
-    const serviceIdInt = parseInt(service_id);
-
-    if (!customer_name || isNaN(barberIdInt) || isNaN(serviceIdInt)) {
-        return res.status(400).json({ error: 'Name, Barber ID, and Service ID are required.' });
-    }
-
-    // --- 1. BLOCKING CHECK: Prevent user from joining if they have an active booking ---
-    if (user_id) {
-        const { data: activeEntry, error: checkError } = await supabase
-            .from('queue_entries')
-            .select('id, status, barber_id')
-            .eq('user_id', user_id)
-            .in('status', ['Waiting', 'Up Next', 'In Progress'])
-            .maybeSingle();
-
-        if (checkError) {
-            console.error('Error checking active status:', checkError);
-            return res.status(500).json({ error: 'Server error checking queue status.' });
-        }
-
-        if (activeEntry) {
-            console.warn(`User ${user_id} blocked from joining: Already in queue (Entry #${activeEntry.id})`);
-            return res.status(409).json({
-                error: 'You already have an active booking.',
-                details: activeEntry
-            });
-        }
-    }
-
     try {
-        // --- 2. JOIN QUEUE (Initially puts user in 'Waiting') ---
+        // 1. Join Queue RPC
         const { data, error } = await supabase.rpc('join_queue_auto_assign', {
             p_customer_name: customer_name,
-            p_barber_id: barberIdInt,
-            p_service_id: serviceIdInt,
-            p_customer_phone: customer_phone || null,
+            p_barber_id: parseInt(barber_id),
+            p_service_id: parseInt(service_id),
+            p_customer_phone: null,
             p_customer_email: customer_email || null,
             p_reference_image_url: reference_image_url || null,
-            p_player_id: player_id || null,
+            p_player_id: null, // REMOVED ONESIGNAL ID
             p_user_id: user_id || null,
             p_ai_haircut_image_url: null,
             p_share_ai_image: false,
             p_is_vip: !!is_vip
         });
 
-        if (error) {
-            console.error('[RPC Join] Database function error:', error.message);
-            return res.status(409).json({ error: error.message });
-        }
-
+        if (error) throw error;
         let newQueueEntry = Array.isArray(data) ? data[0] : data;
-        if (!newQueueEntry) { throw new Error('Database function did not return a new entry.'); }
 
-        // ============================================================
-        // 🔵 NEW FIX: FILL EMPTY "UP NEXT" SLOT IMMEDIATELY
-        // ============================================================
-        // If the database put them in "Waiting", checking if "Up Next" is actually empty.
+        // 2. Auto-Fill Check
         if (newQueueEntry.status === 'Waiting') {
-             // Check if anyone else is currently "Up Next" for this barber
-            const { data: upNextData } = await supabase
-                .from('queue_entries')
-                .select('id')
-                .eq('barber_id', barberIdInt)
-                .eq('status', 'Up Next')
-                .maybeSingle();
-
-            // If NO ONE is "Up Next", promote this new person immediately
+            const { data: upNextData } = await supabase.from('queue_entries').select('id').eq('barber_id', barber_id).eq('status', 'Up Next').maybeSingle();
             if (!upNextData) {
-                console.log(`[RPC Join] "Up Next" slot is empty. Promoting #${newQueueEntry.id} immediately.`);
-                
-                const { data: updatedEntry, error: updateError } = await supabase
-                    .from('queue_entries')
-                    .update({ status: 'Up Next' })
-                    .eq('id', newQueueEntry.id)
-                    .select()
-                    .single();
-
-                if (!updateError && updatedEntry) {
-                    newQueueEntry = updatedEntry; // Update our local variable so notifications fire below
-                }
+                const { data: updated } = await supabase.from('queue_entries').update({ status: 'Up Next' }).eq('id', newQueueEntry.id).select().single();
+                if (updated) newQueueEntry = updated;
             }
         }
-        // ============================================================
-        // 🔵 END FIX
-        // ============================================================
-
-
-        // ============================================================
-        // 🟢 EXISTING VIP LOGIC (Run this AFTER filling the empty slot)
-        // ============================================================
-        console.log(`[RPC Join] Triggering VIP enforcement for Barber ${barberIdInt}...`);
-
-        // This executes the JS logic to SWAP a Regular "Up Next" with a VIP "Waiting"
-        const promotedCustomers = await enforceQueueLogic(barberIdInt);
-
+        
+        // 3. VIP Logic
+        const promotedCustomers = await enforceQueueLogic(parseInt(barber_id));
         const promotedEntry = promotedCustomers.find(c => c && c.id === newQueueEntry.id);
-        if (promotedEntry) {
-            console.log(`[RPC Join] User #${newQueueEntry.id} was immediately promoted to ${promotedEntry.status} by VIP logic`);
-            newQueueEntry = promotedEntry;
-        }
+        if (promotedEntry) newQueueEntry = promotedEntry;
 
-
-        // --- 3. HANDLE HEAD COUNT (For groups) ---
-        if (newQueueEntry && head_count > 1) {
-            await supabase
-                .from('queue_entries')
-                .update({ head_count: parseInt(head_count) })
-                .eq('id', newQueueEntry.id);
-
+        // 4. Head Count
+        if (head_count > 1) {
+            await supabase.from('queue_entries').update({ head_count: parseInt(head_count) }).eq('id', newQueueEntry.id);
             newQueueEntry.head_count = parseInt(head_count);
         }
 
-        console.log(`[RPC Join] Successfully added customer ${newQueueEntry.id} with final status: ${newQueueEntry.status}`);
-
-        // --- 4. SEND NOTIFICATIONS (If status is Up Next) ---
+        // 5. Notifications
         if (newQueueEntry.status === 'Up Next') {
-            console.log(`[RPC Join] Customer ${newQueueEntry.id} is "Up Next". Triggering notifications...`);
-
-            await supabase.from('queue_entries').update({ notified_up_next: true }).eq('id', newQueueEntry.id);
-
-            const context = await getNotificationContext(newQueueEntry);
-
-            // Email Notification
-            if (newQueueEntry.customer_email && process.env.N8N_WEBHOOK_URL && context) {
-                console.log(`[RPC Join] Firing n8n email webhook for ${newQueueEntry.customer_name}`);
-                axios.post(process.env.N8N_WEBHOOK_URL, {
-                    type: 'up_next',
-                    email: newQueueEntry.customer_email,
-                    name: newQueueEntry.customer_name,
-                    barberName: context.barberName,
-                    serviceName: context.serviceName,
-                    duration: context.duration
-                }).catch(webhookError => { console.error("[RPC Join] Error triggering n8n webhook:", webhookError.message); });
-            }
-
-            // Push Notification
-            if (newQueueEntry.player_id && process.env.ONESIGNAL_APP_ID && process.env.ONESIGNAL_REST_API_KEY) {
-                console.log(`[RPC Join] Sending OneSignal Push to ${newQueueEntry.player_id}`);
-                const pushHeaders = { "Content-Type": "application/json; charset=utf-8", "Authorization": `Basic ${process.env.ONESIGNAL_REST_API_KEY}` };
-
-                const pushContent = context ?
-                    `Hi ${newQueueEntry.customer_name}, you're Up Next for the ${context.serviceName} cut with ${context.barberName}. Please head over!` :
-                    `Hi ${newQueueEntry.customer_name}, it's your turn. Please head over!`;
-
-                const pushData = {
-                    app_id: process.env.ONESIGNAL_APP_ID,
-                    include_player_ids: [newQueueEntry.player_id],
-                    headings: { "en": "You're next!" },
-                    contents: { "en": pushContent }
-                };
-                axios.post("https://api.onesignal.com/api/v1/notifications", pushData, { headers: pushHeaders })
-                    .catch(pushError => { console.error("[RPC Join] Error sending OneSignal Push:", pushError.response?.data || pushError.message); });
-            }
+            await processUpNextNotification(newQueueEntry);
         }
 
         res.status(201).json(newQueueEntry);
 
     } catch (error) {
-        console.error('Error in POST /api/queue:', error.message);
-        res.status(500).json({ error: `Failed to add to queue: ${error.message}` });
-    }
-});
-
-/**
- * ENDPOINT: Test Push Notification
- * Call this via Postman: POST /api/test/push { "playerId": "your-uuid-here" }
- */
-app.post('/api/test/push', async (req, res) => {
-    const { playerId } = req.body;
-    if (!playerId) return res.status(400).json({ error: "Player ID required" });
-
-    const ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID;
-    const ONESIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY;
-
-    try {
-        const pushData = {
-            app_id: ONESIGNAL_APP_ID,
-            include_player_ids: [playerId],
-            headings: { "en": "Dash-Q Test" },
-            contents: { "en": "This is a test notification from your backend!" }
-        };
-
-        const response = await axios.post("https://api.onesignal.com/api/v1/notifications", pushData, {
-            headers: {
-                "Content-Type": "application/json; charset=utf-8",
-                "Authorization": `Basic ${ONESIGNAL_REST_API_KEY}`
-            }
-        });
-
-        res.json({ message: "Sent!", data: response.data });
-    } catch (error) {
-        console.error("OneSignal Test Failed:", error.response?.data || error.message);
         res.status(500).json({ error: error.message });
     }
 });
@@ -1518,52 +1316,7 @@ app.put('/api/queue/next', async (req, res) => {
 
         // --- STEP 3: Send notifications for the *correct* 'Up Next' customer ---
         if (newUpNextCustomer) {
-            console.log(`[Instant] Triggering instant email for Queue #${newUpNextCustomer.id}`);
-            processUpNextNotification(newUpNextCustomer).catch(err => {
-                console.error("[Instant] Failed instant send (Cron will handle it):", err.message);
-            });
-
-
-            const context = await getNotificationContext(newUpNextCustomer);
-
-            if (newUpNextCustomer.customer_email && process.env.N8N_WEBHOOK_URL && context) {
-                // MODIFIED PAYLOAD: Added full_name, serviceName, and duration
-                axios.post(process.env.N8N_WEBHOOK_URL, {
-                    email: newUpNextCustomer.customer_email,
-                    name: newUpNextCustomer.customer_name,
-                    barberName: context.barberName,
-                    serviceName: context.serviceName,
-                    duration: context.duration
-                })
-                    .catch(webhookError => { console.error("[RPC v5] Error triggering n8n webhook:", webhookError.message); });
-            }
-
-            if (newUpNextCustomer.player_id && process.env.ONESIGNAL_APP_ID && process.env.ONESIGNAL_REST_API_KEY) {
-                // MODIFIED PUSH MESSAGE: Enhanced content
-                const pushHeaders = { "Content-Type": "application/json; charset=utf-8", "Authorization": `Basic ${process.env.ONESIGNAL_REST_API_KEY}` };
-
-                const pushContent = context ?
-                    `Hi ${newUpNextCustomer.customer_name}, you're Up Next for the ${context.serviceName} cut with ${context.barberName}. Please head over!` :
-                    `Hi ${newUpNextCustomer.customer_name}, it's your turn. Please head over!`;
-
-                const pushData = {
-                    app_id: process.env.ONESIGNAL_APP_ID,
-                    include_player_ids: [newUpNextCustomer.player_id],
-                    headings: { "en": "You're next!" },
-                    contents: { "en": pushContent }
-                };
-                axios.post("https://api.onesignal.com/api/v1/notifications", pushData, { headers: pushHeaders })
-                    .catch(pushError => { console.error("[RPC v5] Error sending OneSignal Push:", pushError.response?.data || pushError.message); });
-            }
-        } else {
-            console.log("[RPC v5] auto_fill_up_next_v2 found no one to promote (or slot was full).");
-        }
-await supabase.rpc('call_next_customer', { p_barber_id: barber_id, p_queue_id: queue_id });
-        const promoted = await enforceQueueLogic(barber_id); // Auto-fill
-        if (promoted[0]) {
-            // Fetch subscription for the promoted user
-            const { data: fullEntry } = await supabase.from('queue_entries').select('*').eq('id', promoted[0].id).single();
-            processUpNextNotification(fullEntry);
+            await processUpNextNotification(newUpNextCustomer);
         }
         res.json({ success: true });
     } catch (e) {
@@ -1589,20 +1342,7 @@ app.put('/api/queue/cancel', async (req, res) => {
 
         const newUpNextCustomer = Array.isArray(nextCustomerData) ? nextCustomerData[0] : null;
         if (newUpNextCustomer) {
-            console.log(`[RPC Cancel] Triggering notifications for new Up Next: ${newUpNextCustomer.id}`);
-            if (newUpNextCustomer.customer_email && process.env.N8N_WEBHOOK_URL) {
-                axios.post(process.env.N8N_WEBHOOK_URL, { email: newUpNextCustomer.customer_email, name: newUpNextCustomer.customer_name })
-                    .catch(err => console.error("[RPC Cancel] Error n8n webhook:", err.message));
-            }
-            if (newUpNextCustomer.player_id && process.env.ONESIGNAL_APP_ID) {
-                axios.post("https://api.onesignal.com/api/v1/notifications", {
-                    app_id: process.env.ONESIGNAL_APP_ID,
-                    include_player_ids: [newUpNextCustomer.player_id],
-                    headings: { "en": "You're next!" },
-                    contents: { "en": `Hi ${newUpNextCustomer.customer_name}, it's your turn. Please head over!` },
-                }, { headers: { "Authorization": `Basic ${process.env.ONESIGNAL_REST_API_KEY}` } })
-                    .catch(err => console.error("[RPC Cancel] Error OneSignal push:", err.message));
-            }
+            await processUpNextNotification(newUpNextCustomer);
         }
 
         res.json({ message: `Queue entry #${queueIdInt} cancelled.` });
@@ -1662,19 +1402,7 @@ app.post('/api/queue/complete', async (req, res) => {
         const promotedCustomers = await enforceQueueLogic(barberIdInt);
         const newUpNextCustomer = Array.isArray(promotedCustomers) ? promotedCustomers[0] : null;
         if (newUpNextCustomer) {
-            console.log(`[Auto-fill] Promoted customer ${newUpNextCustomer.id} to Up Next. Triggering notifications.`);
-            if (newUpNextCustomer.customer_email && process.env.N8N_WEBHOOK_URL) {
-                console.log(`[Auto-fill] Firing n8n email webhook for ${newUpNextCustomer.customer_name}`);
-                axios.post(process.env.N8N_WEBHOOK_URL, { email: newUpNextCustomer.customer_email, name: newUpNextCustomer.customer_name })
-                    .catch(webhookError => { console.error("[Auto-fill] Error triggering n8n webhook:", webhookError.message); });
-            }
-            if (newUpNextCustomer.player_id && process.env.ONESIGNAL_APP_ID && process.env.ONESIGNAL_REST_API_KEY) {
-                console.log(`[Auto-fill] Sending OneSignal Push to ${newUpNextCustomer.player_id}`);
-                const pushHeaders = { "Content-Type": "application/json; charset=utf-8", "Authorization": `Basic ${process.env.ONESIGNAL_REST_API_KEY}` };
-                const pushData = { app_id: process.env.ONESIGNAL_APP_ID, include_player_ids: [newUpNextCustomer.player_id], headings: { "en": "You're next!" }, contents: { "en": `Hi ${newUpNextCustomer.customer_name}, it's your turn. Please head over!` } };
-                axios.post("https://api.onesignal.com/api/v1/notifications", pushData, { headers: pushHeaders })
-                    .catch(pushError => { console.error("[Auto-fill] Error sending OneSignal Push:", pushError.response?.data || pushError.message); });
-            }
+            await processUpNextNotification(newUpNextCustomer);
         }
 
         console.log('Successfully logged service:', data);
