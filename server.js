@@ -724,6 +724,31 @@ app.post('/api/chat/send', async (req, res) => {
     }
 });
 
+/**
+ * ENDPOINT: Mark messages as READ
+ */
+app.put('/api/chat/read', async (req, res) => {
+    const { queueId, readerId } = req.body; // readerId is the person opening the chat
+
+    if (!queueId || !readerId) return res.status(400).json({ error: "Missing fields" });
+
+    try {
+        // Mark all messages in this queue NOT sent by the reader as read
+        const { error } = await supabase
+            .from('chat_messages')
+            .update({ read_at: new Date().toISOString() })
+            .eq('queue_entry_id', queueId)
+            .neq('sender_id', readerId) // Don't mark my own messages as read by me
+            .is('read_at', null);
+
+        if (error) throw error;
+        res.json({ success: true });
+    } catch (error) {
+        console.error("Error marking read:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 
 /**
  * ENDPOINT (NEW): Fetch Customer Loyalty History (For Barber/Admin Use)
@@ -1369,7 +1394,7 @@ app.put('/api/queue/photo', async (req, res) => {
 
 /**
  * ENDPOINT 3.5 (UPDATED): Get full queue details for Barber Dashboard
- * Now includes 'nextAppointment' for the Safety Gap Warning.
+ * Includes 'unread_count' for chat notification badges and 'nextAppointment' for Safety Gap.
  */
 app.get('/api/queue/details/:barberId', async (req, res) => {
     const { barberId } = req.params;
@@ -1378,6 +1403,47 @@ app.get('/api/queue/details/:barberId', async (req, res) => {
     if (isNaN(barberIdInt)) return res.status(400).json({ error: "Invalid Barber ID" });
 
     try {
+        // 0. Fetch Barber's UUID (Required to filter out their own messages from unread count)
+        const { data: bProfile } = await supabase
+            .from('barber_profiles')
+            .select('user_id')
+            .eq('id', barberIdInt)
+            .maybeSingle();
+
+        const barberUserId = bProfile?.user_id;
+
+        // --- HELPER: Fetch unread counts for a list of entries ---
+        const fetchUnreadCounts = async (entries) => {
+            if (!entries || entries.length === 0) return entries;
+            
+            const entryIds = entries.map(e => e.id);
+            
+            // Query: Get messages in these queues that are NOT read
+            let query = supabase
+                .from('chat_messages')
+                .select('queue_entry_id, sender_id')
+                .in('queue_entry_id', entryIds)
+                .is('read_at', null);
+            
+            // Critical: Exclude messages sent by the barber themselves
+            if (barberUserId) {
+                query = query.neq('sender_id', barberUserId);
+            }
+
+            const { data: unreadMsgs, error } = await query;
+
+            if (error) {
+                console.error("Error counting unread messages:", error);
+                return entries; // Return entries without counts if error occurs
+            }
+
+            // Map counts back to entries
+            return entries.map(e => {
+                const count = unreadMsgs.filter(m => m.queue_entry_id === e.id).length;
+                return { ...e, unread_count: count };
+            });
+        };
+
         // 1. Fetch WAITING list
         const { data: waitingData, error: waitingError } = await supabase.from('queue_entries')
             .select(`*, services(name, price_php), profiles(id), is_vip`)
@@ -1404,28 +1470,42 @@ app.get('/api/queue/details/:barberId', async (req, res) => {
 
         const finalUpNext = (upNextListData && upNextListData.length > 0) ? upNextListData[0] : null;
 
-        // 4. (NEW) Fetch Next Immediate Appointment
-        // We need this to warn the barber if they try to call a walk-in close to an appointment time.
+        // 4. Fetch Next Immediate Appointment (Safety Gap Warning)
         const now = new Date().toISOString();
         const { data: nextAppt, error: apptError } = await supabase
             .from('appointments')
             .select('id, scheduled_time, customer_name, services(name, duration_minutes)')
             .eq('barber_id', barberIdInt)
             .eq('status', 'confirmed')
-            .eq('is_converted_to_queue', false) // Only get ones that aren't already in the queue
-            .gt('scheduled_time', now)          // Only future appointments
-            .order('scheduled_time', { ascending: true }) // Get the soonest one
+            .eq('is_converted_to_queue', false)
+            .gt('scheduled_time', now)
+            .order('scheduled_time', { ascending: true })
             .limit(1)
             .maybeSingle();
 
         if (apptError) throw apptError;
 
-        // 5. Return compiled data
+        // 5. Apply Unread Counts to all lists
+        const waitingWithCounts = await fetchUnreadCounts(waitingData || []);
+        
+        let inProgressWithCount = null;
+        if (inProgressData) {
+            const res = await fetchUnreadCounts([inProgressData]);
+            inProgressWithCount = res[0];
+        }
+
+        let upNextWithCount = null;
+        if (finalUpNext) {
+            const res = await fetchUnreadCounts([finalUpNext]);
+            upNextWithCount = res[0];
+        }
+
+        // 6. Return compiled response
         res.json({ 
-            waiting: waitingData || [], 
-            inProgress: inProgressData, 
-            upNext: finalUpNext,
-            nextAppointment: nextAppt // <--- Critical for Safety Gap Warning
+            waiting: waitingWithCounts, 
+            inProgress: inProgressWithCount, 
+            upNext: upNextWithCount,
+            nextAppointment: nextAppt 
         });
 
     } catch (error) {
@@ -1433,7 +1513,6 @@ app.get('/api/queue/details/:barberId', async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch detailed queue' });
     }
 });
-
 /**
  * ENDPOINT 4 (v5 - RPC - ATOMIC): Call next customer
  * This is now much simpler and safer. It only does two things:
@@ -2523,11 +2602,13 @@ app.post('/api/admin/force-next', async (req, res) => {
 
 /**
  * FEATURE 2: Admin "Omni-Chat" - Get Active Chats
- * Returns list of customers currently in queue (Waiting/UpNext/InProgress) who have chat messages.
+ * Returns list of active queue entries that have chat history, 
+ * including unread message counts for the Admin.
  */
 app.get('/api/admin/active-chats', async (req, res) => {
     try {
-        // 1. Get all active queue entries
+        // 1. Get all active queue entries (Waiting, Up Next, In Progress)
+        // We need the user_id to identify which messages are from the customer
         const { data: entries, error } = await supabase
             .from('queue_entries')
             .select(`
@@ -2544,18 +2625,38 @@ app.get('/api/admin/active-chats', async (req, res) => {
 
         if (error) throw error;
 
-        // 2. Filter: Only keep entries that actually have messages in 'chat_messages'
-        // This prevents the admin list from being cluttered with empty chats.
+        // 2. Filter & Count: Only return entries with messages
         const activeChats = [];
         
         for (const entry of entries) {
-            const { count } = await supabase
+            // A. Count TOTAL messages (to see if chat exists)
+            const { count: totalCount, error: countError } = await supabase
                 .from('chat_messages')
                 .select('*', { count: 'exact', head: true })
                 .eq('queue_entry_id', entry.id);
-            
-            if (count > 0) {
-                activeChats.push({ ...entry, message_count: count });
+
+            if (countError) {
+                console.error(`Error counting messages for queue ${entry.id}`, countError);
+                continue;
+            }
+
+            // If there are messages, we process this entry
+            if (totalCount > 0) {
+                // B. Count UNREAD messages for Admin
+                // Logic: Count messages sent by the CUSTOMER (entry.user_id) that are NOT read.
+                // This ignores messages sent by the Barber or other Admins.
+                const { count: unreadCount } = await supabase
+                    .from('chat_messages')
+                    .select('*', { count: 'exact', head: true })
+                    .eq('queue_entry_id', entry.id)
+                    .eq('sender_id', entry.user_id) // Only count messages FROM the customer
+                    .is('read_at', null);           // That are not read
+
+                activeChats.push({ 
+                    ...entry, 
+                    message_count: totalCount, 
+                    unread_count: unreadCount || 0 
+                });
             }
         }
 
