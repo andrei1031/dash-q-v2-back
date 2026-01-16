@@ -1,5 +1,6 @@
 // --- Import our "tools" ---
 require('dotenv').config();
+const webPush = require('web-push');
 
 // --- DEFINE CONSTANTS IMMEDIATELY AFTER DOTENV LOAD ---
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -7,6 +8,18 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const BARBER_SIGNUP_CODE = process.env.BARBER_SIGNUP_CODE; // New
 const BARBER_LOGIN_PIN = process.env.BARBER_LOGIN_PIN;     // New
+
+// Configure VAPID
+if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+    webPush.setVapidDetails(
+        process.env.VAPID_EMAIL,
+        process.env.VAPID_PUBLIC_KEY,
+        process.env.VAPID_PRIVATE_KEY
+    );
+    console.log("✅ VAPID Web Push configured.");
+} else {
+    console.warn("⚠️ VAPID keys missing. Push notifications will not work.");
+}
 
 // --- VALIDATION CHECK ---
 const missingVars = [];
@@ -205,6 +218,32 @@ async function getNotificationContext(queueEntry) {
     }
 }
 
+// Helper: Send Push Notification to a User
+async function sendPushNotification(userId, payload) {
+    try {
+        // 1. Get the subscription from DB
+        const { data: user } = await supabase
+            .from('profiles')
+            .select('push_subscription')
+            .eq('id', userId)
+            .single();
+
+        if (user?.push_subscription) {
+            // 2. Send via Web Push
+            await webPush.sendNotification(
+                user.push_subscription,
+                JSON.stringify(payload)
+            );
+            console.log(`[Push] Sent to user ${userId}`);
+        } else {
+            console.log(`[Push] User ${userId} has no subscription.`);
+        }
+    } catch (error) {
+        console.error(`[Push] Failed to send to ${userId}:`, error.message);
+        // If 410 Gone, we should remove the subscription from DB (optional cleanup)
+    }
+}
+
 // --- API Endpoints ---
 /**
  * ENDPOINT: Customer Confirms Attendance
@@ -229,6 +268,32 @@ app.put('/api/queue/confirm', async (req, res) => {
     } catch (error) {
         console.error("Confirmation failed:", error.message);
         res.status(500).json({ error: 'Server error confirming attendance.' });
+    }
+});
+
+/**
+ * ENDPOINT: Subscribe to Push Notifications
+ * Saves the browser's subscription object to the user's profile or a separate table.
+ */
+app.post('/api/subscribe', async (req, res) => {
+    const { subscription, userId } = req.body;
+
+    if (!subscription || !userId) return res.status(400).json({ error: 'Missing fields' });
+
+    try {
+        // Save subscription to DB. 
+        // NOTE: You need a 'push_subscription' column (jsonb) in your 'profiles' table!
+        const { error } = await supabase
+            .from('profiles')
+            .update({ push_subscription: subscription })
+            .eq('id', userId);
+
+        if (error) throw error;
+
+        res.status(201).json({ message: 'Subscribed to push notifications!' });
+    } catch (error) {
+        console.error("Subscription error:", error);
+        res.status(500).json({ error: 'Failed to save subscription' });
     }
 });
 
@@ -691,8 +756,8 @@ app.put('/api/appointments/approve', async (req, res) => {
 });
 
 /**
- * ENDPOINT: Send Chat Message (Replaces Socket.IO 'chat message' event)
- * Handles profanity filtering and database insertion.
+ * ENDPOINT: Send Chat Message & Trigger Push Notification
+ * Handles profanity filtering, DB insertion, and Push Alerts.
  */
 app.post('/api/chat/send', async (req, res) => {
     const { senderId, queueId, message } = req.body;
@@ -708,7 +773,7 @@ app.post('/api/chat/send', async (req, res) => {
     }
 
     try {
-        // 2. Log to Database (Supabase Realtime will pick this up automatically!)
+        // 2. Log to Database
         const { data, error } = await supabase.from('chat_messages').insert({
             queue_entry_id: parseInt(queueId),
             sender_id: senderId,
@@ -717,9 +782,57 @@ app.post('/api/chat/send', async (req, res) => {
 
         if (error) throw error;
 
+        // 3. TRIGGER PUSH NOTIFICATION
+        // We need to figure out who the "other person" is.
+        // If Sender == Customer, Notify Barber.
+        // If Sender == Barber, Notify Customer.
+        
+        // A. Fetch Queue Entry to get Customer ID and Barber ID
+        const { data: entry } = await supabase
+            .from('queue_entries')
+            .select('user_id, barber_id')
+            .eq('id', queueId)
+            .single();
+
+        if (entry) {
+            let recipientId = null;
+
+            // B. Determine Recipient
+            if (senderId === entry.user_id) {
+                // Sender is Customer -> Notify Barber
+                // We need to look up the Barber's *User ID* from their Profile ID
+                const { data: barber } = await supabase
+                    .from('barber_profiles')
+                    .select('user_id')
+                    .eq('id', entry.barber_id)
+                    .single();
+                
+                recipientId = barber?.user_id;
+            } else {
+                // Sender is Barber (or Admin) -> Notify Customer
+                recipientId = entry.user_id;
+            }
+
+            // C. Send Notification if Recipient Found
+            if (recipientId) {
+                const title = "New Message";
+                // Truncate long messages for the notification body
+                const body = message.length > 40 ? message.substring(0, 40) + '...' : message;
+                
+                // Helper function call (Must be defined in server.js)
+                // If you haven't defined it, check Step 4 of the VAPID plan.
+                sendPushNotification(recipientId, { 
+                    title: title, 
+                    body: body, 
+                    url: '/' // Clicking opens the app
+                });
+            }
+        }
+
         res.status(200).json(data);
+
     } catch (error) {
-        console.error("Chat insert error:", error.message);
+        console.error("Chat send error:", error.message);
         res.status(500).json({ error: 'Failed to send message.' });
     }
 });
