@@ -280,6 +280,28 @@ app.put('/api/queue/confirm', async (req, res) => {
 });
 
 /**
+ * TEST ENDPOINT: Manually trigger a push notification
+ * Usage: POST /api/test/push-manual { "userId": "user-uuid-here", "message": "Hello World" }
+ */
+app.post('/api/test/push-manual', async (req, res) => {
+    const { userId, message } = req.body;
+    
+    if (!userId) return res.status(400).json({ error: 'User ID is required' });
+
+    try {
+        await sendPushNotification(userId, {
+            title: "Test Notification",
+            body: message || "This is a test from Postman/Console!",
+            url: "/"
+        });
+        res.json({ success: true, message: `Sent to ${userId}` });
+    } catch (error) {
+        console.error("Test Push Error:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
  * ENDPOINT: Subscribe to Push Notifications
  * Saves the browser's subscription object to the user's profile or a separate table.
  */
