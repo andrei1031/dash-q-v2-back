@@ -1,5 +1,6 @@
 // --- Import our "tools" ---
 require('dotenv').config();
+const webpush = require('web-push');
 
 // --- DEFINE CONSTANTS IMMEDIATELY AFTER DOTENV LOAD ---
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -25,7 +26,7 @@ if (missingVars.length > 0) {
 
 if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
     webpush.setVapidDetails(
-        'mailto:your-email@example.com',
+        'mailto:andreisantossaldivar@gmail.com',
         VAPID_PUBLIC_KEY,
         VAPID_PRIVATE_KEY
     );
