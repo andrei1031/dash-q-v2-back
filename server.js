@@ -1919,7 +1919,7 @@ app.get('/api/queue/public/:barberId', async (req, res) => {
             .select(`
                 id, customer_name, status, created_at, updated_at, 
                 services(duration_minutes), reference_image_url, 
-                is_vip, head_count
+                is_vip, head_count, is_confirmed
             `)
             .eq('barber_id', barberIdInt)
             .in('status', ['Waiting', 'Up Next', 'In Progress'])
