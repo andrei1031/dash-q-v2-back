@@ -157,49 +157,37 @@ async function enforceQueueLogic(barberId) {
 }
 
 /**
- * ROBUST EMAIL SENDER
- * Handles sending the email and marking the database flag to prevent duplicates.
+ * UPDATED NOTIFICATION LOGIC (VAPID SUPPORT)
+ * Sends "Up Next" alerts using the new Web Push system.
  */
 async function processUpNextNotification(entry) {
     try {
         // 1. Get Context (Barber Name, Service Name)
         const context = await getNotificationContext(entry);
-        if (!context) {
-            console.error(`[Email Job] Could not fetch context for Queue #${entry.id}`);
-            return;
-        }
+        const barberName = context?.barberName || "Your Barber";
+        const serviceName = context?.serviceName || "Service";
 
-        // 2. Send to n8n (if email exists)
-        if (entry.customer_email && process.env.N8N_WEBHOOK_URL) {
-            console.log(`[Email Job] Sending email to ${entry.customer_email} for Queue #${entry.id}`);
+        console.log(`[Notify] Processing 'Up Next' for Queue #${entry.id} (User ${entry.user_id})`);
 
-            await axios.post(process.env.N8N_WEBHOOK_URL, {
-                email: entry.customer_email,
-                name: entry.customer_name,
-                barberName: context.barberName,
-                serviceName: context.serviceName,
-                duration: context.duration
+        // 2. TRIGGER VAPID PUSH (The Fix)
+        if (entry.user_id) {
+            await sendPushNotification(entry.user_id, {
+                title: "You're Up Next! ✂️",
+                body: `Get ready! ${barberName} is ready for your ${serviceName}. Please head to the shop now.`,
+                url: '/' // Opens the app when clicked
             });
-
-            // 3. CRITICAL: Mark as notified in DB so we don't send again
-            await supabase
-                .from('queue_entries')
-                .update({ notified_up_next: true })
-                .eq('id', entry.id);
-
-            console.log(`[Email Job] Success. Flagged Queue #${entry.id} as notified.`);
-        } else {
-            // If no email, mark as notified anyway so we don't keep checking it
-            console.log(`[Email Job] No email for Queue #${entry.id}, skipping and flagging.`);
-            await supabase
-                .from('queue_entries')
-                .update({ notified_up_next: true })
-                .eq('id', entry.id);
         }
+
+        // 3. Mark as notified in DB so we don't spam them
+        await supabase
+            .from('queue_entries')
+            .update({ notified_up_next: true })
+            .eq('id', entry.id);
+
+        console.log(`[Notify] Success. Flagged Queue #${entry.id} as notified.`);
 
     } catch (error) {
-        console.error(`[Email Job] FAILED for Queue #${entry.id}:`, error.message);
-        // We DO NOT mark as true here. The Cron will try again next minute.
+        console.error(`[Notify] FAILED for Queue #${entry.id}:`, error.message);
     }
 }
 
