@@ -10,15 +10,23 @@ const BARBER_SIGNUP_CODE = process.env.BARBER_SIGNUP_CODE; // New
 const BARBER_LOGIN_PIN = process.env.BARBER_LOGIN_PIN;     // New
 
 // Configure VAPID
-if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-    webPush.setVapidDetails(
-        process.env.VAPID_EMAIL,
-        process.env.VAPID_PUBLIC_KEY,
-        process.env.VAPID_PRIVATE_KEY
-    );
-    console.log("✅ VAPID Web Push configured.");
+if (
+    process.env.VAPID_PUBLIC_KEY && 
+    process.env.VAPID_PRIVATE_KEY && 
+    process.env.VAPID_EMAIL // <--- Ensure this exists
+) {
+    try {
+        webPush.setVapidDetails(
+            process.env.VAPID_EMAIL,
+            process.env.VAPID_PUBLIC_KEY,
+            process.env.VAPID_PRIVATE_KEY
+        );
+        console.log("✅ VAPID Web Push configured.");
+    } catch (err) {
+        console.error("⚠️ VAPID Config Error:", err.message);
+    }
 } else {
-    console.warn("⚠️ VAPID keys missing. Push notifications will not work.");
+    console.warn("⚠️ VAPID keys or Email missing. Push notifications will be disabled.");
 }
 
 // --- VALIDATION CHECK ---
