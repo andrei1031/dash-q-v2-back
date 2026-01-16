@@ -2814,16 +2814,21 @@ app.get('/api/admin/active-chats', async (req, res) => {
 /**
  * FEATURE 2: Admin "Omni-Chat" - Send Reply
  * Admin sends a message into a specific queue entry chat.
+ * Triggers Push Notification to the Customer.
  */
 app.post('/api/admin/chat/reply', async (req, res) => {
     const { adminId, queueId, message } = req.body;
 
-    if (!await isAdmin(adminId)) return res.status(403).json({ error: 'Unauthorized.' });
+    // 1. SECURITY: Verify the user is actually an Admin
+    if (!await isAdmin(adminId)) {
+        return res.status(403).json({ error: 'Unauthorized: Admin access required.' });
+    }
 
     try {
-        // Tag the message so the UI knows it's from Admin
+        // Tagging the message helps the Customer know it's support/admin
         const adminMessage = `[ADMIN]: ${message}`;
 
+        // 2. DATABASE: Insert the message
         const { data, error } = await supabase.from('chat_messages').insert({
             queue_entry_id: parseInt(queueId),
             sender_id: adminId, 
@@ -2831,10 +2836,30 @@ app.post('/api/admin/chat/reply', async (req, res) => {
         }).select().single();
 
         if (error) throw error;
+        
+        // 3. NOTIFICATION: Manually trigger Push Notification to Customer
+        // (The database insert updates the UI, but this wakes up the phone)
+        
+        // Fetch the queue entry to find the Customer's User ID
+        const { data: entry } = await supabase
+            .from('queue_entries')
+            .select('user_id')
+            .eq('id', queueId)
+            .single();
+
+        if (entry && entry.user_id) {
+            // Send Push (Ensure sendPushNotification helper is defined in server.js)
+            sendPushNotification(entry.user_id, { 
+                title: "Support Message", 
+                body: message, // Don't include [ADMIN] prefix in push to keep it clean
+                url: '/' 
+            });
+        }
+
         res.json(data);
 
     } catch (error) {
-        console.error("Admin Reply Error:", error);
+        console.error("Admin Reply Error:", error.message);
         res.status(500).json({ error: error.message });
     }
 });
