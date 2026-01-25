@@ -1,0 +1,382 @@
+const axios = require("axios");
+const { createQueueHelpers } = require("../utils/queueLogic");
+const { supabase, supabaseAdmin } = require("../database/supabase");
+const { isAdmin } = require("../utils/admin");
+
+
+const { enforceQueueLogic } = createQueueHelpers(supabase);
+
+// POST /api/admin/next-customer
+// Body: { barberId: 5 }
+exports.next_customer = async (req, res) => {
+    const { barberId } = req.body;
+
+    try {
+        // 1. Find the current customer in the chair (status: 'serving') and finish them
+        await db.query(
+            "UPDATE queue SET status = 'completed' WHERE barber_id = $1 AND status = 'serving'",
+            [barberId]
+        );
+
+        // 2. Find the next person waiting
+        const nextCustomer = await db.query(
+            "SELECT * FROM queue WHERE barber_id = $1 AND status = 'waiting' ORDER BY id ASC LIMIT 1",
+            [barberId]
+        );
+
+        if (nextCustomer.rows.length === 0) {
+            return res.json({ message: "Queue is empty for this barber." });
+        }
+
+        // 3. Update the next person to 'serving'
+        const customer = nextCustomer.rows[0];
+        await db.query("UPDATE queue SET status = 'serving' WHERE id = $1", [customer.id]);
+
+        // 4. TRIGGER N8N (Notify the customer)
+        // Note: We use the logic you already have, just triggering it manually here
+        await axios.post(process.env.N8N_WEBHOOK_URL, {
+            type: 'up_next', // Ensure your Switch node handles this!
+            email: customer.email,
+            name: customer.name,
+            barberName: `Admin for Barber ${barberId}` // Or fetch actual name
+        });
+
+        res.json({ success: true, message: `Moved ${customer.name} to chair.` });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
+};
+
+/**
+ * ENDPOINT: Add a New Service (With Validation)
+ */
+exports.add_admin_services = async (req, res) => {
+    const { userId, name, duration_minutes, price_php } = req.body;
+
+    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    // VALIDATION: Prevent bad data
+    if (!name || name.trim() === "") return res.status(400).json({ error: 'Service name is required.' });
+    if (duration_minutes < 5) return res.status(400).json({ error: 'Duration must be at least 5 minutes.' });
+    if (price_php < 0) return res.status(400).json({ error: 'Price cannot be negative.' });
+
+    try {
+        const { data, error } = await supabase.from('services').insert({
+            name,
+            duration_minutes: parseInt(duration_minutes),
+            price_php: parseFloat(price_php),
+            is_active: true
+        }).select().single();
+
+        if (error) throw error;
+        res.json({ message: 'Service added successfully', data });
+    } catch (error) {
+        console.error("Admin add service error:", error.message);
+        res.status(500).json({ error: error.message });
+    }
+}
+
+/**
+ * ENDPOINT: Edit a Service (Fixed for "Cannot coerce" error)
+ */
+exports.update_admin_service = async (req, res) => {
+    const { id } = req.params;
+    const { userId, name, duration_minutes, price_php } = req.body;
+
+    // Check Admin rights (assuming isAdmin function exists or you skip it for dev)
+    // if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    // VALIDATION
+    if (!name || name.trim() === "") return res.status(400).json({ error: 'Service name is required.' });
+    if (duration_minutes < 5) return res.status(400).json({ error: 'Duration must be at least 5 minutes.' });
+    if (price_php < 0) return res.status(400).json({ error: 'Price cannot be negative.' });
+
+    try {
+        const { data, error } = await supabase.from('services')
+            .update({ name, duration_minutes, price_php })
+            .eq('id', id)
+            .select(); // <--- REMOVED .single() to prevent crash
+
+        if (error) throw error;
+
+        // Check if anything was actually updated
+        if (!data || data.length === 0) {
+            return res.status(404).json({ error: 'Service ID not found (it may have been deleted).' });
+        }
+
+        res.json({ message: 'Service updated successfully', data: data[0] });
+    } catch (error) {
+        console.error("Admin edit service error:", error.message);
+        res.status(500).json({ error: error.message });
+    }
+}
+
+/**
+ * ENDPOINT: Admin Get All Services (Active AND Archived)
+ */
+exports.all_services = async (req, res) => {
+   // Note: Real-world apps should verify Admin ID here
+    try {
+        const { data, error } = await supabase
+            .from('services')
+            .select('*')
+            .order('is_active', { ascending: false }) // Active first
+            .order('name', { ascending: true });
+
+        if (error) throw error;
+        res.json(data || []);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+}
+
+/**
+ * ENDPOINT: Admin Restore Service (Undo Delete)
+ */
+exports.restore_admin_service = async (req, res) => {
+    const { id } = req.params;
+    const { userId } = req.body;
+    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    try {
+        const { error } = await supabase.rpc('restore_service', { p_service_id: parseInt(id) });
+        if (error) throw error;
+        res.json({ message: 'Service restored successfully.' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+}
+
+/**
+ * ENDPOINT: Soft Delete a Service (Archive)
+ * Prevents database crashes by hiding the service instead of deleting history.
+ */
+exports.remove_admin_service = async (req, res) => {
+    const { id } = req.params;
+    const { userId } = req.body;
+    console.log(`DELETE /api/admin/services/${id} - Archive request by ${userId}`);
+
+    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    try {
+        // Update is_active to false (Soft Delete)
+        const { error } = await supabase
+            .from('services')
+            .update({ is_active: false })
+            .eq('id', id);
+
+        if (error) throw error;
+        res.json({ message: 'Service archived successfully.' });
+    } catch (error) {
+        console.error("Admin delete service error:", error.message);
+        res.status(500).json({ error: error.message });
+    }
+}
+
+/**
+ * ENDPOINT: Get Shop-Wide Analytics
+ */
+exports.get_admin_stats = async (req, res) => {
+    try {
+        // 1. Total Revenue (Sum of services_completed)
+        const { data: revenueData, error: revError } = await supabase
+            .from('services_completed')
+            .select('price, head_count');
+        if (revError) throw revError;
+        // 2. Calculate Total Revenue (Same as before)
+        const totalRevenue = revenueData.reduce((sum, item) => sum + (item.price || 0), 0);
+
+        // 3. FIX: Calculate Total Cuts by summing head_count
+        // OLD: const totalCuts = revenueData.length;
+        const totalCuts = revenueData.reduce((sum, item) => sum + (item.head_count || 1), 0);
+
+        // 3. Total Active Barbers
+        const { count: barberCount, error: barberError } = await supabase.from('barber_profiles')
+            .select('*', { count: 'exact', head: true })
+            .eq('is_active', true);
+
+        res.json({ totalRevenue, totalCuts, activeBarbers: barberCount || 0 });
+    } catch (error) {
+        console.error("Admin stats error:", error);
+        res.status(500).json({ error: "Failed to load stats" });
+    }
+}
+
+/**
+ * ENDPOINT: Transfer Queue Entry (Admin)
+ */
+exports.queue_transfer = async (req, res) => {
+    const { userId, queueId, targetBarberId } = req.body;
+    console.log(`PUT /api/admin/transfer - Moving Queue #${queueId} to Barber ${targetBarberId}`);
+
+    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    try {
+        // Use the RPC we created
+        const { error } = await supabase.rpc('transfer_queue_item', {
+            p_queue_id: parseInt(queueId),
+            p_target_barber_id: parseInt(targetBarberId)
+        });
+
+        if (error) throw error;
+        res.json({ message: 'Customer transferred successfully.' });
+    } catch (error) {
+        console.error("Transfer error:", error);
+        res.status(500).json({ error: error.message });
+    }
+}
+
+/**
+ * ENDPOINT: Super Detailed Admin Analytics
+ */
+exports.get_admin_analytics = async (req, res) => {
+    try {
+        // IMPORTANT: Must call 'get_detailed_admin_analytics'
+        const { data, error } = await supabase.rpc('get_detailed_admin_analytics');
+
+        if (error) throw error;
+        res.json(data);
+    } catch (error) {
+        console.error("Advanced analytics error:", error);
+        res.status(500).json({ error: "Failed to load analytics." });
+    }
+}
+
+/**
+ * ENDPOINT: Get All Users (Robust Version)
+ */
+exports.get_all_users = async (req, res) => {
+    try {
+        console.log("GET /api/admin/users - Fetching profiles...");
+
+        // FIX: Select ALL columns (*) to avoid errors if specific columns are missing
+        // We also remove the .order() temporarily to rule out sorting errors
+        const { data, error } = await supabase
+            .from('profiles')
+            .select('*');
+
+        if (error) {
+            console.error("Supabase Error fetching profiles:", error.message);
+            throw error;
+        }
+
+        console.log(`Found ${data.length} profiles.`);
+        res.json(data);
+    } catch (error) {
+        console.error("Error fetching users:", error.message);
+        res.status(500).json({ error: "Failed to load users: " + error.message });
+    }
+}
+
+
+/**
+ * ENDPOINT: Delete User Account (Safely)
+ */
+exports.remove_user = async (req, res) => {
+    const { targetId } = req.params;
+    const { userId } = req.body;
+
+    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    try {
+        console.log(`Admin ${userId} deleting user ${targetId}`);
+
+        // 1. Try to delete from Auth (Supabase handles most cascades, but not all)
+        const { error } = await supabaseAdmin.auth.admin.deleteUser(targetId);
+        if (error) throw error;
+
+        // 2. Manually clean up the profile just in case
+        await supabase.from('profiles').delete().eq('id', targetId);
+
+        res.json({ message: 'User account deleted.' });
+    } catch (error) {
+        console.error("Delete user error:", error);
+        // Return a helpful error if it fails due to database links
+        if (error.message.includes('foreign key constraint')) {
+            return res.status(409).json({ error: 'Cannot delete user: They have active records (History/Queue). Ask them to cancel appointments first.' });
+        }
+        res.status(500).json({ error: "Delete failed: " + error.message });
+    }
+}
+
+/**
+ * FEATURE 1: Admin "Force Next"
+ * Automatically finds the next person for a specific barber and moves them to "In Progress".
+ */
+exports.force_next = async (req, res) => {
+     const { userId, barberId } = req.body; // userId is Admin's ID
+
+    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    try {
+        // 1. Check if chair is occupied
+        const { data: inChair } = await supabase
+            .from('queue_entries')
+            .select('id, customer_name')
+            .eq('barber_id', barberId)
+            .eq('status', 'In Progress')
+            .maybeSingle();
+
+        if (inChair) {
+            return res.status(400).json({ error: `Chair is currently occupied by ${inChair.customer_name}. Finish them first.` });
+        }
+
+        // 2. Find the next candidate (Up Next OR Top Waiting)
+        // Priority: Up Next -> VIP Waiting -> Regular Waiting
+        let nextCustomer = null;
+
+        // A. Check Up Next
+        const { data: upNext } = await supabase
+            .from('queue_entries')
+            .select('*')
+            .eq('barber_id', barberId)
+            .eq('status', 'Up Next')
+            .maybeSingle();
+        
+        nextCustomer = upNext;
+
+        // B. If no Up Next, check Waiting
+        if (!nextCustomer) {
+            const { data: waiting } = await supabase
+                .from('queue_entries')
+                .select('*')
+                .eq('barber_id', barberId)
+                .eq('status', 'Waiting')
+                .order('is_vip', { ascending: false })
+                .order('created_at', { ascending: true })
+                .limit(1)
+                .maybeSingle();
+            nextCustomer = waiting;
+        }
+
+        if (!nextCustomer) {
+            return res.status(400).json({ error: 'Queue is empty for this barber.' });
+        }
+
+        console.log(`[Admin Force] Moving Customer #${nextCustomer.id} for Barber ${barberId}`);
+
+        // 3. EXECUTE MOVE (Re-using RPC Logic)
+        const { error: rpcError } = await supabase.rpc('call_next_customer', {
+            p_barber_id: parseInt(barberId),
+            p_queue_id: nextCustomer.id
+        });
+
+        if (rpcError) throw rpcError;
+
+        // 4. TRIGGER AUTO-FILL (Atomic logic)
+        await enforceQueueLogic(parseInt(barberId));
+
+        // 5. NOTIFY (Standard Logic)
+        // We trigger the notification logic just like the standard endpoint
+        // (Simplified here: The standard /api/queue/next does this, but since we called RPC directly,
+        // we rely on the client or the fact that 'call_next_customer' sets status to 'In Progress')
+
+        res.json({ message: `Successfully moved ${nextCustomer.customer_name} to chair.`, customer: nextCustomer });
+
+    } catch (error) {
+        console.error("Force Next Error:", error);
+        res.status(500).json({ error: error.message });
+    }
+}
