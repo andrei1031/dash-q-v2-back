@@ -1,6 +1,7 @@
 const { createNotificationHelpers } = require('../utils/notifications');
 const { supabase } = require("../database/supabase");
 const  setupVapid  = require('../config/vapid');
+const filter = require('../utils/profanity')
 const webPush = setupVapid()
 
 const { sendPushNotification } = createNotificationHelpers({ supabase, webPush });
