@@ -5,19 +5,7 @@ const bodyParser = require('body-parser');
 const barber = require('./config/barber');
 const { startCronJobs } = require('./cron');
 const cors = require('cors');
-const Filter = require('bad-words');
-const tagalogBadWords = [
-    'gago',
-    'putangina',
-    'bobo',
-    'tangina',
-    'ina mo',
-    'tanga',
-    'kupal',
-    // ADD MORE TAGALOG WORDS HERE
-];
-const filter = new Filter();
-filter.addWords(...tagalogBadWords);
+
 
 // --- Configure our "tools" ---
 const app = express();

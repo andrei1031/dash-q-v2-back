@@ -24,7 +24,7 @@ router.get('/admin/services', all_services);
 router.put('/admin/services/:id/restore', restore_admin_service);
 router.delete('/admin/services/:id', remove_admin_service);
 router.get('/admin/stats', get_admin_stats);
-router.put('admin/transfer', queue_transfer);
+router.put('/admin/transfer', queue_transfer);
 router.get('/admin/analytics/advanced', get_admin_analytics);
 router.get('/admin/users', get_all_users);
 router.delete('/admin/users/:targetId', remove_user);
