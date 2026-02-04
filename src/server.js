@@ -114,6 +114,9 @@ app.use('/api', signup);
 const login = require('./routes/authRoutes');
 app.use('/api', login);
 
+const guest_login = require('./routes/authRoutes');
+app.use('/api', guest_login);
+
 const queue = require('./routes/queueRoutes');
 app.use('/api', queue);
 

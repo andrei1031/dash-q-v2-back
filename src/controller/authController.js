@@ -1,4 +1,7 @@
 const fetch = require('node-fetch');
+const jwt = require("jsonwebtoken");
+const { v4: uuidv4 } = require("uuid"); // optional, for guest_id
+// npm i uuid
 
 const { SUPABASE_URL, SUPABASE_SERVICE_KEY, SUPABASE_ANON_KEY, supabase } = require("../database/supabase");
 
@@ -235,3 +238,24 @@ exports.login = async (req, res) => {
         res.status(500).json({ error: 'Login failed due to a server error.' });
     }
 }
+
+exports.guest_login = async (req, res) => {
+  try {
+    const guestId = uuidv4(); // or any generated id
+    const payload = {
+      sub: guestId,
+      role: "guest",
+      type: "guest"
+    };
+
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "2h" });
+
+    return res.status(200).json({
+      user: { id: guestId, role: "guest" },
+      token
+    });
+  } catch (e) {
+    console.error("guestLogin error:", e);
+    return res.status(500).json({ error: "Failed to create guest session." });
+  }
+};
