@@ -6,7 +6,7 @@ const { supabase } = require("../database/supabase");
  * Route: POST /api/guest/join
  */
 exports.join_as_guest = async (req, res) => {
-    const { name, barberId, serviceId } = req.body;
+    const { name, barberId, serviceId, headCount, referenceImageUrl } = req.body;
 
     // Basic validation
     if (!name || name.trim() === "") {
@@ -19,8 +19,8 @@ exports.join_as_guest = async (req, res) => {
     try {
         // Insert guest into queue
         // We set user_id to null and is_guest to true
-        const { data, error } = await supabase
-            .from('queue')
+        let { data, error } = await supabase
+            .from('queue_entries')
             .insert([
                 {
                     customer_name: name,
@@ -28,15 +28,41 @@ exports.join_as_guest = async (req, res) => {
                     service_id: parseInt(serviceId),
                     user_id: null, // Guest has no user account
                     is_guest: true,
-                    status: 'waiting'
+                    status: 'Waiting',
+                    head_count: headCount || 1,
+                    reference_image_url: referenceImageUrl || null,
+                    is_vip: false,
+                    customer_email: null,
+                    customer_phone: null
                 }
             ])
             .select()
             .single();
 
         if (error) throw error;
+        
+        // Check if "Up Next" slot is empty and promote immediately
+        const { data: upNextData } = await supabase
+            .from('queue_entries')
+            .select('id')
+            .eq('barber_id', parseInt(barberId))
+            .eq('status', 'Up Next')
+            .maybeSingle();
 
-        res.status(201).json({ success: true, message: "Joined queue as guest.", data });
+        if (!upNextData) {
+            const { data: updatedEntry, error: updateError } = await supabase
+                .from('queue_entries')
+                .update({ status: 'Up Next' })
+                .eq('id', data.id)
+                .select()
+                .single();
+            
+            if (!updateError && updatedEntry) {
+                data = updatedEntry;
+            }
+        }
+
+        res.status(201).json({ success: true, message: "Joined queue as guest.", data: data });
 
     } catch (error) {
         console.error("Guest join error:", error.message);
