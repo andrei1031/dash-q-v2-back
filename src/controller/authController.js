@@ -239,7 +239,7 @@ exports.login = async (req, res) => {
     }
 }
 
-exports.guest_login = async (req, res) => {
+exports.guest_login = (req, res) => {
   try {
     const guestId = uuidv4(); // or any generated id
     const payload = {
