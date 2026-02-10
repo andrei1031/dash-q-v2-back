@@ -55,7 +55,7 @@ exports.location = async (req, res) => {
 }
 
 /**
- * ENDPOINT 2 (RPC): Add a customer and auto-assign status (FIXED FOR EMPTY QUEUE)
+ * ENDPOINT 2 (RPC): Add a customer and auto-assign status
  */
 exports.queue = async (req, res) => {
     const {
@@ -65,7 +65,7 @@ exports.queue = async (req, res) => {
         head_count = 1,
     } = req.body;
 
-    console.log(`[RPC Join] POST /api/queue - Customer: ${customer_name}, User: ${user_id}, VIP: ${is_vip}`);
+    console.log(`[RPC Join] POST /api/queue - Customer: ${customer_name}, VIP: ${is_vip}`);
 
     const barberIdInt = parseInt(barber_id);
     const serviceIdInt = parseInt(service_id);
@@ -74,31 +74,21 @@ exports.queue = async (req, res) => {
         return res.status(400).json({ error: 'Name, Barber ID, and Service ID are required.' });
     }
 
-    // --- 1. BLOCKING CHECK: Prevent user from joining if they have an active booking ---
+    // --- 1. BLOCKING CHECK: Active Booking ---
     if (user_id) {
         const { data: activeEntry, error: checkError } = await supabase
             .from('queue_entries')
-            .select('id, status, barber_id')
+            .select('id, status')
             .eq('user_id', user_id)
             .in('status', ['Waiting', 'Up Next', 'In Progress'])
             .maybeSingle();
 
-        if (checkError) {
-            console.error('Error checking active status:', checkError);
-            return res.status(500).json({ error: 'Server error checking queue status.' });
-        }
-
-        if (activeEntry) {
-            console.warn(`User ${user_id} blocked from joining: Already in queue (Entry #${activeEntry.id})`);
-            return res.status(409).json({
-                error: 'You already have an active booking.',
-                details: activeEntry
-            });
-        }
+        if (checkError) return res.status(500).json({ error: 'Server error checking queue status.' });
+        if (activeEntry) return res.status(409).json({ error: 'You already have an active booking.', details: activeEntry });
     }
 
     try {
-        // --- 2. JOIN QUEUE (Initially puts user in 'Waiting') ---
+        // --- 2. JOIN QUEUE (Initially 'Waiting') ---
         const { data, error } = await supabase.rpc('join_queue_auto_assign', {
             p_customer_name: customer_name,
             p_barber_id: barberIdInt,
@@ -113,86 +103,103 @@ exports.queue = async (req, res) => {
             p_is_vip: !!is_vip
         });
 
-        if (error) {
-            console.error('[RPC Join] Database function error:', error.message);
-            return res.status(409).json({ error: error.message });
-        }
+        if (error) return res.status(409).json({ error: error.message });
 
         let newQueueEntry = Array.isArray(data) ? data[0] : data;
-        if (!newQueueEntry) { throw new Error('Database function did not return a new entry.'); }
+        if (!newQueueEntry) throw new Error('Database function did not return a new entry.');
 
         // ============================================================
-        // 🔵 NEW FIX: FILL EMPTY "UP NEXT" SLOT IMMEDIATELY
+        // 🔴 PRIORITY LOGIC START
+        // Hierarchy: Appointment > VIP > Regular (FCFS)
         // ============================================================
-        // If the database put them in "Waiting", checking if "Up Next" is actually empty.
-        if (newQueueEntry.status === 'Waiting') {
-             // Check if anyone else is currently "Up Next" for this barber
-            const { data: upNextData } = await supabase
-                .from('queue_entries')
-                .select('id')
-                .eq('barber_id', barberIdInt)
-                .eq('status', 'Up Next')
-                .maybeSingle();
+        
+        // A. Check for "Blocking" Appointments (e.g., within next 45 mins)
+        const now = new Date();
+        const appointmentBuffer = new Date(now.getTime() + 45 * 60 * 1000); // 45 Minute lookahead
 
-            // If NO ONE is "Up Next", promote this new person immediately
-            if (!upNextData) {
-                console.log(`[RPC Join] "Up Next" slot is empty. Promoting #${newQueueEntry.id} immediately.`);
-                
-                const { data: updatedEntry, error: updateError } = await supabase
+        const { data: upcomingAppt } = await supabase
+            .from('appointments')
+            .select('id, scheduled_time')
+            .eq('barber_id', barberIdInt)
+            .eq('status', 'confirmed')
+            .eq('is_converted_to_queue', false)
+            .gt('scheduled_time', now.toISOString())
+            .lt('scheduled_time', appointmentBuffer.toISOString())
+            .maybeSingle();
+
+        // Get current "Up Next" person (if any)
+        const { data: currentUpNext } = await supabase
+            .from('queue_entries')
+            .select('id, is_vip, customer_name, status')
+            .eq('barber_id', barberIdInt)
+            .eq('status', 'Up Next')
+            .maybeSingle();
+
+        // --- SCENARIO 1: APPOINTMENT EXISTS ---
+        if (upcomingAppt) {
+            console.log(`[Priority] Upcoming Appointment found at ${upcomingAppt.scheduled_time}. Blocking Up Next slot.`);
+            
+            // If someone is currently Up Next (VIP or Regular), DEMOTE them to save the spot for the Appointment
+            if (currentUpNext) {
+                console.log(`[Priority] Demoting ${currentUpNext.customer_name} (VIP: ${currentUpNext.is_vip}) to make room for Appointment.`);
+                await supabase
                     .from('queue_entries')
-                    .update({ status: 'Up Next' })
-                    .eq('id', newQueueEntry.id)
-                    .select()
-                    .single();
+                    .update({ status: 'Waiting', notified_up_next: false })
+                    .eq('id', currentUpNext.id);
+            }
+            
+            // New user stays Waiting (do nothing).
+        } 
+        
+        // --- SCENARIO 2: NO APPOINTMENT (Standard VIP Logic) ---
+        else {
+            if (!currentUpNext) {
+                // SLOT EMPTY: Anyone takes it
+                console.log(`[Priority] Slot empty. Promoting #${newQueueEntry.id} to Up Next.`);
+                const { data: updated } = await supabase.from('queue_entries').update({ status: 'Up Next' }).eq('id', newQueueEntry.id).select().single();
+                if (updated) newQueueEntry = updated;
+            } 
+            else {
+                // SLOT FULL: Check for VIP Bump
+                // Rule: New VIP bumps Old Regular. 
+                // Rule: New VIP does NOT bump Old VIP (FCFS).
+                // Rule: New Regular does NOT bump anyone.
 
-                if (!updateError && updatedEntry) {
-                    newQueueEntry = updatedEntry; // Update our local variable so notifications fire below
+                if (!!is_vip && !currentUpNext.is_vip) {
+                    console.log(`[Priority] VIP BUMP! New VIP #${newQueueEntry.id} bumps Regular #${currentUpNext.id}`);
+                    
+                    // 1. Demote Regular
+                    await supabase.from('queue_entries').update({ status: 'Waiting', notified_up_next: false }).eq('id', currentUpNext.id);
+                    
+                    // 2. Promote New VIP
+                    const { data: updated } = await supabase.from('queue_entries').update({ status: 'Up Next' }).eq('id', newQueueEntry.id).select().single();
+                    if (updated) newQueueEntry = updated;
+                } 
+                else if (!!is_vip && currentUpNext.is_vip) {
+                     console.log(`[Priority] VIP Conflict. Slot held by VIP #${currentUpNext.id}. New VIP #${newQueueEntry.id} waits (FCFS).`);
                 }
             }
         }
         // ============================================================
-        // 🔵 END FIX
+        // 🔴 PRIORITY LOGIC END
         // ============================================================
 
 
-        // ============================================================
-        // 🟢 EXISTING VIP LOGIC (Run this AFTER filling the empty slot)
-        // ============================================================
-        console.log(`[RPC Join] Triggering VIP enforcement for Barber ${barberIdInt}...`);
-
-        // This executes the JS logic to SWAP a Regular "Up Next" with a VIP "Waiting"
-        const promotedCustomers = await enforceQueueLogic(barberIdInt);
-
-        const promotedEntry = promotedCustomers.find(c => c && c.id === newQueueEntry.id);
-        if (promotedEntry) {
-            console.log(`[RPC Join] User #${newQueueEntry.id} was immediately promoted to ${promotedEntry.status} by VIP logic`);
-            newQueueEntry = promotedEntry;
-        }
-
-
-        // --- 3. HANDLE HEAD COUNT (For groups) ---
+        // --- 3. HANDLE HEAD COUNT ---
         if (newQueueEntry && head_count > 1) {
-            await supabase
-                .from('queue_entries')
-                .update({ head_count: parseInt(head_count) })
-                .eq('id', newQueueEntry.id);
-
+            await supabase.from('queue_entries').update({ head_count: parseInt(head_count) }).eq('id', newQueueEntry.id);
             newQueueEntry.head_count = parseInt(head_count);
         }
 
-        console.log(`[RPC Join] Successfully added customer ${newQueueEntry.id} with final status: ${newQueueEntry.status}`);
-
-        // --- 4. SEND NOTIFICATIONS (If status is Up Next) ---
+        // --- 4. SEND NOTIFICATIONS (Only if they successfully got the Up Next spot) ---
         if (newQueueEntry.status === 'Up Next') {
-            console.log(`[RPC Join] Customer ${newQueueEntry.id} is "Up Next". Triggering notifications...`);
-
+            console.log(`[RPC Join] Triggering notifications for ${newQueueEntry.customer_name}...`);
             await supabase.from('queue_entries').update({ notified_up_next: true }).eq('id', newQueueEntry.id);
 
             const context = await getNotificationContext(newQueueEntry);
 
-            // Email Notification
+            // Trigger Email (n8n)
             if (newQueueEntry.customer_email && process.env.N8N_WEBHOOK_URL && context) {
-                console.log(`[RPC Join] Firing n8n email webhook for ${newQueueEntry.customer_name}`);
                 axios.post(process.env.N8N_WEBHOOK_URL, {
                     type: 'up_next',
                     email: newQueueEntry.customer_email,
@@ -200,26 +207,22 @@ exports.queue = async (req, res) => {
                     barberName: context.barberName,
                     serviceName: context.serviceName,
                     duration: context.duration
-                }).catch(webhookError => { console.error("[RPC Join] Error triggering n8n webhook:", webhookError.message); });
+                }).catch(err => console.error(err.message));
             }
 
-            // Push Notification
+            // Trigger Push (OneSignal)
             if (newQueueEntry.player_id && process.env.ONESIGNAL_APP_ID && process.env.ONESIGNAL_REST_API_KEY) {
-                console.log(`[RPC Join] Sending OneSignal Push to ${newQueueEntry.player_id}`);
-                const pushHeaders = { "Content-Type": "application/json; charset=utf-8", "Authorization": `Basic ${process.env.ONESIGNAL_REST_API_KEY}` };
-
                 const pushContent = context ?
-                    `Hi ${newQueueEntry.customer_name}, you're Up Next for the ${context.serviceName} cut with ${context.barberName}. Please head over!` :
-                    `Hi ${newQueueEntry.customer_name}, it's your turn. Please head over!`;
-
-                const pushData = {
+                    `Hi ${newQueueEntry.customer_name}, you're Up Next for ${context.serviceName} with ${context.barberName}.` :
+                    `Hi ${newQueueEntry.customer_name}, you're Up Next!`;
+                
+                axios.post("https://api.onesignal.com/api/v1/notifications", {
                     app_id: process.env.ONESIGNAL_APP_ID,
                     include_player_ids: [newQueueEntry.player_id],
                     headings: { "en": "You're next!" },
                     contents: { "en": pushContent }
-                };
-                axios.post("https://api.onesignal.com/api/v1/notifications", pushData, { headers: pushHeaders })
-                    .catch(pushError => { console.error("[RPC Join] Error sending OneSignal Push:", pushError.response?.data || pushError.message); });
+                }, { headers: { "Authorization": `Basic ${process.env.ONESIGNAL_REST_API_KEY}`, "Content-Type": "application/json" } })
+                .catch(err => console.error(err.message));
             }
         }
 
