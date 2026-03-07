@@ -213,6 +213,9 @@ app.use('/api', get_barber_appointments);
 const process_appointments = require('./routes/appointmentRoutes');
 app.use('/api', process_appointments);
 
+const settings = require('./routes/settingsRoutes');
+app.use('/api', settings);
+
 // API ENDPOINTS END
 
 const server = http.createServer(app);
