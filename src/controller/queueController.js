@@ -542,11 +542,7 @@ exports.complete = async (req, res) => {
     }
 
     try {
-        const { data: queueEntry, error: fetchError } = await supabase.from('queue_entries')
-            .select('service_id, head_count, is_vip, services(price_php, price_vip_php)')
-            .eq('id', queueIdInt)
-            .maybeSingle();
-
+        const { data: queueEntry, error: fetchError } = await supabase.from('queue_entries').select('service_id, head_count, services(price_php)').eq('id', queueIdInt).maybeSingle();
         if (fetchError || !queueEntry || !queueEntry.services || queueEntry.services.price_php == null) {
             console.error("Failed to fetch service price for completion:", fetchError, queueEntry);
             return res.status(500).json({ error: 'Failed to find service price for completion.' });
@@ -554,15 +550,9 @@ exports.complete = async (req, res) => {
         const servicePrice = parseFloat(queueEntry.services.price_php);
         const headCount = queueEntry.head_count || 1;
 
-        // Determine VIP Charge: Use DB value if present (as surcharge), otherwise use manual input
-        let finalVipCharge = vipChargeInt;
-        if (queueEntry.is_vip && queueEntry.services.price_vip_php != null) {
-            finalVipCharge = parseFloat(queueEntry.services.price_vip_php);
-        }
-
         // --- CRITICAL CHANGE: Add the VIP charge to the total profit ---
         const baseTotal = servicePrice * headCount;
-        const totalProfit = baseTotal + tipInt + finalVipCharge;
+        const totalProfit = baseTotal + tipInt + vipChargeInt;
 
         // 1. UPDATE QUEUE ENTRY: Mark as Done AND save the tip amount
         const { error: updateError } = await supabase
