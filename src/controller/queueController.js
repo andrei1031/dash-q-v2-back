@@ -542,7 +542,11 @@ exports.complete = async (req, res) => {
     }
 
     try {
-        const { data: queueEntry, error: fetchError } = await supabase.from('queue_entries').select('service_id, head_count, services(price_php)').eq('id', queueIdInt).maybeSingle();
+        const { data: queueEntry, error: fetchError } = await supabase.from('queue_entries')
+            .select('service_id, head_count, is_vip, services(price_php, price_vip_php)')
+            .eq('id', queueIdInt)
+            .maybeSingle();
+
         if (fetchError || !queueEntry || !queueEntry.services || queueEntry.services.price_php == null) {
             console.error("Failed to fetch service price for completion:", fetchError, queueEntry);
             return res.status(500).json({ error: 'Failed to find service price for completion.' });
@@ -550,9 +554,15 @@ exports.complete = async (req, res) => {
         const servicePrice = parseFloat(queueEntry.services.price_php);
         const headCount = queueEntry.head_count || 1;
 
+        // Determine VIP Charge: Use DB value if present (as surcharge), otherwise use manual input
+        let finalVipCharge = vipChargeInt;
+        if (queueEntry.is_vip && queueEntry.services.price_vip_php != null) {
+            finalVipCharge = parseFloat(queueEntry.services.price_vip_php);
+        }
+
         // --- CRITICAL CHANGE: Add the VIP charge to the total profit ---
         const baseTotal = servicePrice * headCount;
-        const totalProfit = baseTotal + tipInt + vipChargeInt;
+        const totalProfit = baseTotal + tipInt + finalVipCharge;
 
         // 1. UPDATE QUEUE ENTRY: Mark as Done AND save the tip amount
         const { error: updateError } = await supabase
@@ -618,7 +628,8 @@ exports.public_barber = async (req, res) => {
             .select(`
                 id, customer_name, status, created_at, updated_at, 
                 services(duration_minutes), reference_image_url, 
-                is_vip, head_count, is_confirmed
+                is_vip, head_count, is_confirmed,
+                user_id, barber_id
             `)
             .eq('barber_id', barberIdInt)
             .in('status', ['Waiting', 'Up Next', 'In Progress'])

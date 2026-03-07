@@ -53,7 +53,7 @@ exports.next_customer = async (req, res) => {
  * ENDPOINT: Add a New Service (With Validation)
  */
 exports.add_admin_services = async (req, res) => {
-    const { userId, name, duration_minutes, price_php } = req.body;
+    const { userId, name, duration_minutes, price_php, price_vip_php } = req.body;
 
     if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
 
@@ -61,12 +61,14 @@ exports.add_admin_services = async (req, res) => {
     if (!name || name.trim() === "") return res.status(400).json({ error: 'Service name is required.' });
     if (duration_minutes < 5) return res.status(400).json({ error: 'Duration must be at least 5 minutes.' });
     if (price_php < 0) return res.status(400).json({ error: 'Price cannot be negative.' });
+    if (price_vip_php !== undefined && price_vip_php < 0) return res.status(400).json({ error: 'VIP Price cannot be negative.' });
 
     try {
         const { data, error } = await supabase.from('services').insert({
             name,
             duration_minutes: parseInt(duration_minutes),
             price_php: parseFloat(price_php),
+            price_vip_php: (price_vip_php !== undefined && price_vip_php !== "") ? parseFloat(price_vip_php) : null,
             is_active: true
         }).select().single();
 
@@ -83,7 +85,7 @@ exports.add_admin_services = async (req, res) => {
  */
 exports.update_admin_service = async (req, res) => {
     const { id } = req.params;
-    const { userId, name, duration_minutes, price_php } = req.body;
+    const { userId, name, duration_minutes, price_php, price_vip_php } = req.body;
 
     // Check Admin rights (assuming isAdmin function exists or you skip it for dev)
     // if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
@@ -92,10 +94,16 @@ exports.update_admin_service = async (req, res) => {
     if (!name || name.trim() === "") return res.status(400).json({ error: 'Service name is required.' });
     if (duration_minutes < 5) return res.status(400).json({ error: 'Duration must be at least 5 minutes.' });
     if (price_php < 0) return res.status(400).json({ error: 'Price cannot be negative.' });
+    if (price_vip_php !== undefined && price_vip_php < 0) return res.status(400).json({ error: 'VIP Price cannot be negative.' });
 
     try {
         const { data, error } = await supabase.from('services')
-            .update({ name, duration_minutes, price_php })
+            .update({ 
+                name, 
+                duration_minutes, 
+                price_php,
+                price_vip_php: (price_vip_php !== undefined && price_vip_php !== "") ? parseFloat(price_vip_php) : null
+            })
             .eq('id', id)
             .select(); // <--- REMOVED .single() to prevent crash
 

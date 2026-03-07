@@ -241,7 +241,10 @@ exports.login = async (req, res) => {
 
 exports.guest_login = (req, res) => {
   try {
-    const guestId = uuidv4(); // or any generated id
+    // Allow client to send an existing guestId to maintain session on refresh
+    const { guestId: existingId } = req.body;
+    const guestId = existingId || uuidv4();
+
     const payload = {
       sub: guestId,
       role: "guest",

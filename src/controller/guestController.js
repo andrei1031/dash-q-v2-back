@@ -1,4 +1,7 @@
 const { supabase } = require("../database/supabase");
+const { createQueueHelpers } = require("../utils/queueLogic");
+
+const { enforceQueueLogic } = createQueueHelpers(supabase);
 
 /**
  * ENDPOINT: Join Queue as Guest
@@ -6,7 +9,7 @@ const { supabase } = require("../database/supabase");
  * Route: POST /api/guest/join
  */
 exports.join_as_guest = async (req, res) => {
-    const { name, barberId, serviceId, headCount, referenceImageUrl } = req.body;
+    const { name, barberId, serviceId, headCount, referenceImageUrl, guestId, playerId } = req.body;
 
     // Basic validation
     if (!name || name.trim() === "") {
@@ -17,6 +20,21 @@ exports.join_as_guest = async (req, res) => {
     }
 
     try {
+        // Check if the provided guestId is already active. If so, treat as new guest (null ID)
+        // to allow multiple guest entries without conflict.
+        let finalGuestId = guestId || null;
+
+        if (finalGuestId) {
+            const { data: active } = await supabase
+                .from('queue_entries')
+                .select('id')
+                .eq('user_id', finalGuestId)
+                .in('status', ['Waiting', 'Up Next', 'In Progress'])
+                .maybeSingle();
+            
+            if (active) finalGuestId = null;
+        }
+
         // Insert guest into queue
         // We set user_id to null and is_guest to true
         let { data, error } = await supabase
@@ -26,14 +44,15 @@ exports.join_as_guest = async (req, res) => {
                     customer_name: name,
                     barber_id: parseInt(barberId),
                     service_id: parseInt(serviceId),
-                    user_id: null, // Guest has no user account
+                    user_id: finalGuestId, // Use computed ID to prevent conflicts
                     is_guest: true,
                     status: 'Waiting',
                     head_count: headCount || 1,
                     reference_image_url: referenceImageUrl || null,
                     is_vip: false,
                     customer_email: null,
-                    customer_phone: null
+                    customer_phone: null,
+                    player_id: playerId || null // Save OneSignal ID for notifications
                 }
             ])
             .select()
@@ -41,24 +60,14 @@ exports.join_as_guest = async (req, res) => {
 
         if (error) throw error;
         
-        // Check if "Up Next" slot is empty and promote immediately
-        const { data: upNextData } = await supabase
-            .from('queue_entries')
-            .select('id')
-            .eq('barber_id', parseInt(barberId))
-            .eq('status', 'Up Next')
-            .maybeSingle();
+        // Check if "Up Next" slot is empty and promote immediately (Atomic & Safe)
+        const promotedCustomers = await enforceQueueLogic(parseInt(barberId));
 
-        if (!upNextData) {
-            const { data: updatedEntry, error: updateError } = await supabase
-                .from('queue_entries')
-                .update({ status: 'Up Next' })
-                .eq('id', data.id)
-                .select()
-                .single();
-            
-            if (!updateError && updatedEntry) {
-                data = updatedEntry;
+        // If our guest was promoted, update the response data
+        if (promotedCustomers && promotedCustomers.length > 0) {
+            const myPromotion = promotedCustomers.find(p => p.id === data.id);
+            if (myPromotion) {
+                data = myPromotion;
             }
         }
 
