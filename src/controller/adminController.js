@@ -407,10 +407,20 @@ exports.get_customers_database = async (req, res) => {
         
         console.log("Auth users found:", authUsers?.users?.length || 0);
         
-        // Filter out barbers and admins - show only customers
+        // Get barber user IDs from barber_profiles table
+        const { data: barberProfiles } = await db.from('barber_profiles').select('user_id');
+        const barberUserIds = new Set((barberProfiles || []).map(b => b.user_id));
+        
+        console.log("Barber user IDs:", barberUserIds);
+        
+        // Filter out barbers (by checking barber_profiles) and admins
         let filteredUsers = (authUsers?.users || []).filter(u => {
+            // Skip if user is in barber_profiles
+            if (barberUserIds.has(u.id)) return false;
+            // Skip if user has admin role in metadata
             const role = u.user_metadata?.role || u.role;
-            return role !== 'barber' && role !== 'admin';
+            if (role === 'admin') return false;
+            return true;
         });
         
         // Filter by search if provided
