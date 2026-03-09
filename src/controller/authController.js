@@ -167,7 +167,25 @@ exports.login = async (req, res) => {
             console.warn(`Banned user ${username} attempted login.`);
             return res.status(403).json({ error: 'Your account has been suspended due to policy violations. Contact admin.' });
         }
-        // --- MODIFIED SECTION END ---
+
+        // --- DEVICE BLOCKING CHECK ---
+        const { deviceFingerprint } = req.body;
+        if (deviceFingerprint) {
+            const { data: blockedDevice } = await supabase
+                .from('blocked_devices')
+                .select('*')
+                .eq('device_fingerprint', deviceFingerprint)
+                .eq('is_active', true)
+                .maybeSingle();
+            
+            if (blockedDevice) {
+                console.warn(`Blocked device attempted login: ${deviceFingerprint}`);
+                return res.status(403).json({ 
+                    error: 'This device has been blocked from the system. Please contact the administrator.' 
+                });
+            }
+        }
+        // --- END DEVICE BLOCKING CHECK ---
 
         const userId = profile.id;
 
