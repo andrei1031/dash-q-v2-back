@@ -393,104 +393,57 @@ exports.get_customers_database = async (req, res) => {
 
     console.log("=== FETCHING CUSTOMERS ===");
     console.log("Page:", page, "Search:", search);
-    console.log("Using supabaseAdmin client");
 
     try {
-        // Test basic query first
-        console.log("Testing basic profiles query...");
-        const { data: testData, error: testError } = await db.from('profiles').select('*').limit(1);
-        console.log("Test query result:", { dataCount: testData?.length, error: testError });
-
-        // Build search filter - use proper Supabase .or() syntax
-        let orFilter = null;
-        if (search && search.trim() !== '') {
-            const searchTerm = `%${search.trim()}%`;
-            // Use proper Supabase or() filter syntax
-            orFilter = `full_name.ilike.${searchTerm},email.ilike.${searchTerm}`;
-        }
-
-        console.log("Search filter:", orFilter);
-
-        // Get total count - use db (supabaseAdmin) to bypass RLS
-        let countQuery = db
-            .from('profiles')
-            .select('*', { count: 'exact', head: true });
-
-        if (orFilter) {
-            countQuery = countQuery.or(orFilter);
-        }
-
-        const { count, error: countError } = await countQuery;
-        if (countError) {
-            console.error("Count error:", countError);
-            // Return empty instead of throwing to avoid breaking the UI
-            return res.json({ customers: [], pagination: { page: 1, limit: 20, total: 0, totalPages: 0 } });
-        }
-
-        console.log("Total count:", count);
-
-        // Get paginated data - use db (supabaseAdmin) to bypass RLS
-        let dataQuery = db
-            .from('profiles')
-            .select('*')
-            .order('created_at', { ascending: false })
-            .range(offset, offset + limit - 1);
-
-        if (orFilter) {
-            dataQuery = dataQuery.or(orFilter);
-        }
-
-        const { data: customers, error } = await dataQuery;
-        if (error) {
-            console.error("Customer query error:", error);
-            // Return empty instead of throwing
-            return res.json({ customers: [], pagination: { page: 1, limit: 20, total: 0, totalPages: 0 } });
-        }
-
-        console.log("Found customers:", customers?.length || 0);
-
-        // Get additional stats for each customer
-        const customerIds = customers ? customers.map(c => c.id) : [];
+        // Try to get users from Supabase Auth API directly (most reliable)
+        console.log("Fetching users from Auth API...");
         
-        let completedData = [];
-        if (customerIds.length > 0) {
-            const { data: completed } = await db
-                .from('services_completed')
-                .select('user_id, price')
-                .in('user_id', customerIds);
-            
-            completedData = completed || [];
+        // First try: Get all users using Admin API
+        const { data: authUsers, error: authError } = await supabaseAdmin.auth.admin.listUsers();
+        
+        if (authError) {
+            console.error("Auth API error:", authError);
         }
+        
+        console.log("Auth users found:", authUsers?.users?.length || 0);
+        
+        // Filter by search if provided
+        let filteredUsers = authUsers?.users || [];
+        
+        if (search && search.trim() !== '') {
+            const searchLower = search.trim().toLowerCase();
+            filteredUsers = filteredUsers.filter(u => 
+                (u.email && u.email.toLowerCase().includes(searchLower)) ||
+                (u.user_metadata?.full_name && u.user_metadata.full_name.toLowerCase().includes(searchLower))
+            );
+        }
+        
+        const totalCount = filteredUsers.length;
+        const paginatedUsers = filteredUsers.slice(offset, offset + limit);
+        
+        // Transform to customer format
+        const customers = paginatedUsers.map(user => ({
+            id: user.id,
+            full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Unknown',
+            email: user.email,
+            role: 'customer',
+            created_at: user.created_at,
+            visits: 0,
+            totalSpent: 0
+        }));
 
-        // Calculate stats per customer
-        const customerStatsMap = {};
-        completedData.forEach(item => {
-            if (!customerStatsMap[item.user_id]) {
-                customerStatsMap[item.user_id] = { visits: 0, totalSpent: 0 };
-            }
-            customerStatsMap[item.user_id].visits += 1;
-            customerStatsMap[item.user_id].totalSpent += (item.price || 0);
-        });
-
-        const enrichedCustomers = customers ? customers.map(customer => ({
-            id: customer.id,
-            full_name: customer.full_name,
-            email: customer.email,
-            role: customer.role,
-            created_at: customer.created_at,
-            visits: customerStatsMap[customer.id]?.visits || 0,
-            totalSpent: customerStatsMap[customer.id]?.totalSpent || 0
-        })) : [];
+        console.log("Returning customers:", customers.length);
 
         res.json({
-            customers: enrichedCustomers,
+            customers: customers,
             pagination: {
                 page: parseInt(page),
                 limit: parseInt(limit),
-                total: count || 0,
-                totalPages: Math.ceil((count || 0) / limit)
+                total: totalCount || 0,
+                totalPages: Math.ceil((totalCount || 0) / limit)
             }
         });
+        
     } catch (error) {
         console.error("Customer database error:", error);
         res.status(500).json({ error: "Failed to load customer database: " + error.message });
