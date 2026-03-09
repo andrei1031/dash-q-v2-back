@@ -253,6 +253,264 @@ exports.get_admin_analytics = async (req, res) => {
 }
 
 /**
+ * ENDPOINT: Analytics with Date Filtering (Daily, Weekly, Monthly, Yearly)
+ */
+exports.get_analytics_with_filter = async (req, res) => {
+    const { period } = req.query; // 'daily', 'weekly', 'monthly', 'yearly', 'all'
+    
+    let startDate = null;
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+    
+    switch (period) {
+        case 'daily':
+            startDate = new Date(today);
+            startDate.setHours(0, 0, 0, 0);
+            break;
+        case 'weekly':
+            startDate = new Date(today);
+            startDate.setDate(today.getDate() - 7);
+            break;
+        case 'monthly':
+            startDate = new Date(today);
+            startDate.setMonth(today.getMonth() - 1);
+            break;
+        case 'yearly':
+            startDate = new Date(today);
+            startDate.setFullYear(today.getFullYear() - 1);
+            break;
+        default:
+            startDate = null; // All time
+    }
+
+    try {
+        // Build query based on date filter
+        let query = supabase
+            .from('services_completed')
+            .select(`
+                id,
+                created_at,
+                price,
+                head_count,
+                barber_id,
+                barber_profiles(full_name),
+                services(name)
+            `)
+            .order('created_at', { ascending: false });
+
+        if (startDate) {
+            query = query.gte('created_at', startDate.toISOString());
+        }
+
+        const { data: completedServices, error } = await query;
+
+        if (error) throw error;
+
+        // Calculate totals
+        const totalRevenue = completedServices.reduce((sum, item) => sum + (item.price || 0), 0);
+        const totalCuts = completedServices.reduce((sum, item) => sum + (item.head_count || 1), 0);
+        
+        // Group by barber for performance matrix
+        const barberMap = {};
+        completedServices.forEach(item => {
+            const barberId = item.barber_id;
+            const barberName = item.barber_profiles?.full_name || 'Unknown';
+            
+            if (!barberMap[barberId]) {
+                barberMap[barberId] = {
+                    barber_id: barberId,
+                    full_name: barberName,
+                    cuts: 0,
+                    revenue: 0
+                };
+            }
+            barberMap[barberId].cuts += (item.head_count || 1);
+            barberMap[barberId].revenue += (item.price || 0);
+        });
+
+        const barberStats = Object.values(barberMap).sort((a, b) => b.revenue - a.revenue);
+
+        // Get daily trend data
+        const dailyMap = {};
+        completedServices.forEach(item => {
+            const date = new Date(item.created_at).toISOString().split('T')[0];
+            if (!dailyMap[date]) {
+                dailyMap[date] = { day: date, daily_total: 0, cuts: 0 };
+            }
+            dailyMap[date].daily_total += (item.price || 0);
+            dailyMap[date].cuts += (item.head_count || 1);
+        });
+
+        const dailyTrend = Object.values(dailyMap).sort((a, b) => a.day.localeCompare(b.day));
+
+        res.json({
+            totals: {
+                revenue: totalRevenue,
+                cuts: totalCuts,
+                period: period || 'all'
+            },
+            dailyTrend,
+            barberStats,
+            period_label: period === 'daily' ? 'Today' : 
+                          period === 'weekly' ? 'Last 7 Days' : 
+                          period === 'monthly' ? 'Last 30 Days' : 
+                          period === 'yearly' ? 'Last 12 Months' : 'All Time'
+        });
+    } catch (error) {
+        console.error("Filtered analytics error:", error);
+        res.status(500).json({ error: "Failed to load filtered analytics." });
+    }
+}
+
+/**
+ * ENDPOINT: Customer Database with Pagination
+ */
+exports.get_customers_database = async (req, res) => {
+    const { page = 1, limit = 20, search = '' } = req.query;
+    const offset = (page - 1) * limit;
+
+    try {
+        // Get total count
+        let countQuery = supabase
+            .from('profiles')
+            .select('*', { count: 'exact', head: true });
+
+        if (search) {
+            countQuery = countQuery.or(`full_name.ilike.%${search}%,email.ilike.%${search}%`);
+        }
+
+        const { count, error: countError } = await countQuery;
+        if (countError) throw countError;
+
+        // Get paginated data
+        let dataQuery = supabase
+            .from('profiles')
+            .select('id, full_name, email, role, created_at')
+            .order('created_at', { ascending: false })
+            .range(offset, offset + parseInt(limit) - 1);
+
+        if (search) {
+            dataQuery = dataQuery.or(`full_name.ilike.%${search}%,email.ilike.%${search}%`);
+        }
+
+        const { data: customers, error } = await dataQuery;
+        if (error) throw error;
+
+        // Get additional stats for each customer
+        const customerIds = customers.map(c => c.id);
+        const { data: completedData } = await supabase
+            .from('services_completed')
+            .select('user_id, price')
+            .in('user_id', customerIds);
+
+        // Calculate stats per customer
+        const customerStatsMap = {};
+        completedData.forEach(item => {
+            if (!customerStatsMap[item.user_id]) {
+                customerStatsMap[item.user_id] = { visits: 0, totalSpent: 0 };
+            }
+            customerStatsMap[item.user_id].visits += 1;
+            customerStatsMap[item.user_id].totalSpent += (item.price || 0);
+        });
+
+        const enrichedCustomers = customers.map(customer => ({
+            ...customer,
+            visits: customerStatsMap[customer.id]?.visits || 0,
+            totalSpent: customerStatsMap[customer.id]?.totalSpent || 0
+        }));
+
+        res.json({
+            customers: enrichedCustomers,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total: count,
+                totalPages: Math.ceil(count / limit)
+            }
+        });
+    } catch (error) {
+        console.error("Customer database error:", error);
+        res.status(500).json({ error: "Failed to load customer database." });
+    }
+}
+
+/**
+ * ENDPOINT: Export Analytics as CSV
+ */
+exports.export_analytics_csv = async (req, res) => {
+    const { period } = req.query;
+    
+    let startDate = null;
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+    
+    switch (period) {
+        case 'daily':
+            startDate = new Date(today);
+            startDate.setHours(0, 0, 0, 0);
+            break;
+        case 'weekly':
+            startDate = new Date(today);
+            startDate.setDate(today.getDate() - 7);
+            break;
+        case 'monthly':
+            startDate = new Date(today);
+            startDate.setMonth(today.getMonth() - 1);
+            break;
+        case 'yearly':
+            startDate = new Date(today);
+            startDate.setFullYear(today.getFullYear() - 1);
+            break;
+        default:
+            startDate = null;
+    }
+
+    try {
+        let query = supabase
+            .from('services_completed')
+            .select(`
+                created_at,
+                price,
+                head_count,
+                barber_profiles(full_name),
+                services(name)
+            `)
+            .order('created_at', { ascending: false });
+
+        if (startDate) {
+            query = query.gte('created_at', startDate.toISOString());
+        }
+
+        const { data, error } = await query;
+        if (error) throw error;
+
+        // Convert to CSV
+        const headers = ['Date', 'Time', 'Customer Name', 'Service', 'Barber', 'Heads', 'Price'];
+        const rows = data.map(item => [
+            new Date(item.created_at).toLocaleDateString(),
+            new Date(item.created_at).toLocaleTimeString(),
+            item.customer_name || 'Guest',
+            item.services?.name || 'Unknown',
+            item.barber_profiles?.full_name || 'Unknown',
+            item.head_count || 1,
+            item.price || 0
+        ]);
+
+        const csvContent = [
+            headers.join(','),
+            ...rows.map(row => row.join(','))
+        ].join('\n');
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename=analytics_${period || 'all'}_${new Date().toISOString().split('T')[0]}.csv`);
+        res.send(csvContent);
+    } catch (error) {
+        console.error("CSV export error:", error);
+        res.status(500).json({ error: "Failed to export CSV." });
+    }
+}
+
+/**
  * ENDPOINT: Get All Users (Robust Version)
  */
 exports.get_all_users = async (req, res) => {
