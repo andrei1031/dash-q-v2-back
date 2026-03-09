@@ -391,9 +391,16 @@ exports.get_customers_database = async (req, res) => {
     const search = req.query.search || '';
     const offset = (page - 1) * limit;
 
-    console.log("Fetching customers - page:", page, "search:", search);
+    console.log("=== FETCHING CUSTOMERS ===");
+    console.log("Page:", page, "Search:", search);
+    console.log("Using supabaseAdmin client");
 
     try {
+        // Test basic query first
+        console.log("Testing basic profiles query...");
+        const { data: testData, error: testError } = await db.from('profiles').select('*').limit(1);
+        console.log("Test query result:", { dataCount: testData?.length, error: testError });
+
         // Build search filter - use proper Supabase .or() syntax
         let orFilter = null;
         if (search && search.trim() !== '') {
