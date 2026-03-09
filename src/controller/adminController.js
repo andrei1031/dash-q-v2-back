@@ -3,8 +3,10 @@ const { createQueueHelpers } = require("../utils/queueLogic");
 const { supabase, supabaseAdmin } = require("../database/supabase");
 const { isAdmin } = require("../utils/admin");
 
+// Use supabaseAdmin for admin queries to bypass RLS
+const db = supabaseAdmin;
 
-const { enforceQueueLogic } = createQueueHelpers(supabase);
+const { enforceQueueLogic } = createQueueHelpers(supabaseAdmin);
 
 // POST /api/admin/next-customer
 // Body: { barberId: 5 }
@@ -402,8 +404,8 @@ exports.get_customers_database = async (req, res) => {
 
         console.log("Search filter:", orFilter);
 
-        // Get total count - simple query without joins
-        let countQuery = supabase
+        // Get total count - use db (supabaseAdmin) to bypass RLS
+        let countQuery = db
             .from('profiles')
             .select('*', { count: 'exact', head: true });
 
@@ -414,13 +416,14 @@ exports.get_customers_database = async (req, res) => {
         const { count, error: countError } = await countQuery;
         if (countError) {
             console.error("Count error:", countError);
-            throw new Error(countError.message);
+            // Return empty instead of throwing to avoid breaking the UI
+            return res.json({ customers: [], pagination: { page: 1, limit: 20, total: 0, totalPages: 0 } });
         }
 
         console.log("Total count:", count);
 
-        // Get paginated data - simple query
-        let dataQuery = supabase
+        // Get paginated data - use db (supabaseAdmin) to bypass RLS
+        let dataQuery = db
             .from('profiles')
             .select('*')
             .order('created_at', { ascending: false })
@@ -433,7 +436,8 @@ exports.get_customers_database = async (req, res) => {
         const { data: customers, error } = await dataQuery;
         if (error) {
             console.error("Customer query error:", error);
-            throw new Error(error.message);
+            // Return empty instead of throwing
+            return res.json({ customers: [], pagination: { page: 1, limit: 20, total: 0, totalPages: 0 } });
         }
 
         console.log("Found customers:", customers?.length || 0);
@@ -443,7 +447,7 @@ exports.get_customers_database = async (req, res) => {
         
         let completedData = [];
         if (customerIds.length > 0) {
-            const { data: completed } = await supabase
+            const { data: completed } = await db
                 .from('services_completed')
                 .select('user_id, price')
                 .in('user_id', customerIds);
