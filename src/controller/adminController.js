@@ -407,9 +407,13 @@ exports.get_customers_database = async (req, res) => {
         
         console.log("Auth users found:", authUsers?.users?.length || 0);
         
-        // Filter by search if provided
-        let filteredUsers = authUsers?.users || [];
+        // Filter out barbers and admins - show only customers
+        let filteredUsers = (authUsers?.users || []).filter(u => {
+            const role = u.user_metadata?.role || u.role;
+            return role !== 'barber' && role !== 'admin';
+        });
         
+        // Filter by search if provided
         if (search && search.trim() !== '') {
             const searchLower = search.trim().toLowerCase();
             filteredUsers = filteredUsers.filter(u => 
