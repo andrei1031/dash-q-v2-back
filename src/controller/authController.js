@@ -239,24 +239,45 @@ exports.login = async (req, res) => {
     }
 }
 
-exports.guest_login = (req, res) => {
+exports.guest_login = async (req, res) => {
   try {
     // Allow client to send an existing guestId to maintain session on refresh
-    const { guestId: existingId, nickname } = req.body;
+    const { guestId: existingId, nickname, deviceFingerprint } = req.body;
     
     // Validate nickname if provided
     const guestNickname = nickname && nickname.trim().length >= 2 ? nickname.trim() : `Guest_${Math.floor(Math.random() * 10000)}`;
     
+    // Use existing guestId or create new one
     const guestId = existingId || uuidv4();
+
+    // --- DEVICE BLOCKING CHECK ---
+    if (deviceFingerprint) {
+        const { data: blockedDevice } = await supabase
+            .from('blocked_devices')
+            .select('*')
+            .eq('device_fingerprint', deviceFingerprint)
+            .eq('is_active', true)
+            .maybeSingle();
+        
+        if (blockedDevice) {
+            console.warn(`Blocked device attempted login: ${deviceFingerprint}`);
+            return res.status(403).json({ 
+                error: 'This device has been blocked from the system. Please contact the administrator.' 
+            });
+        }
+    }
+    // --- END DEVICE BLOCKING CHECK ---
 
     const payload = {
       sub: guestId,
       role: "guest",
       type: "guest",
-      nickname: guestNickname
+      nickname: guestNickname,
+      deviceFingerprint: deviceFingerprint || null
     };
 
-    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "2h" });
+    // Extended token expiry to 7 days for persistence across refreshes
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "7d" });
 
     return res.status(200).json({
       user: { 

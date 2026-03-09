@@ -163,6 +163,10 @@ app.use('/api', process_appointments);
 const settings = require('./routes/settingsRoutes');
 app.use('/api', settings);
 
+// Device blocking routes
+const deviceRoutes = require('./routes/deviceRoutes');
+app.use('/api', deviceRoutes);
+
 // API ENDPOINTS END
 
 const server = http.createServer(app);

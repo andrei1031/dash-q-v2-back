@@ -9,7 +9,7 @@ const { enforceQueueLogic } = createQueueHelpers(supabase);
  * Route: POST /api/guest/join
  */
 exports.join_as_guest = async (req, res) => {
-    const { name, barberId, serviceId, headCount, referenceImageUrl, guestId, playerId } = req.body;
+    const { name, barberId, serviceId, headCount, referenceImageUrl, guestId, playerId, deviceFingerprint } = req.body;
 
     // Basic validation
     if (!name || name.trim() === "") {
@@ -18,6 +18,24 @@ exports.join_as_guest = async (req, res) => {
     if (!barberId || !serviceId) {
         return res.status(400).json({ error: "Barber and Service selection are required." });
     }
+
+    // --- DEVICE BLOCKING CHECK ---
+    if (deviceFingerprint) {
+        const { data: blockedDevice } = await supabase
+            .from('blocked_devices')
+            .select('*')
+            .eq('device_fingerprint', deviceFingerprint)
+            .eq('is_active', true)
+            .maybeSingle();
+        
+        if (blockedDevice) {
+            console.warn(`Blocked device attempted to join queue: ${deviceFingerprint}`);
+            return res.status(403).json({ 
+                error: 'This device has been blocked from the system. Please contact the administrator.' 
+            });
+        }
+    }
+    // --- END DEVICE BLOCKING CHECK ---
 
     try {
         // Check if the provided guestId is already active. If so, treat as new guest (null ID)
@@ -52,7 +70,8 @@ exports.join_as_guest = async (req, res) => {
                     is_vip: false,
                     customer_email: null,
                     customer_phone: null,
-                    player_id: playerId || null // Save OneSignal ID for notifications
+                    player_id: playerId || null, // Save OneSignal ID for notifications
+                    device_fingerprint: deviceFingerprint || null // Store device fingerprint
                 }
             ])
             .select()
