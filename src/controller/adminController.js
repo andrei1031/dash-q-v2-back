@@ -384,19 +384,33 @@ exports.get_analytics_with_filter = async (req, res) => {
  * ENDPOINT: Customer Database with Pagination
  */
 exports.get_customers_database = async (req, res) => {
-    const { page = 1, limit = 20, search = '' } = req.query;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const search = req.query.search || '';
     const offset = (page - 1) * limit;
 
     console.log("Fetching customers - page:", page, "search:", search);
 
     try {
+        // Build search filter - use proper Supabase or() syntax
+        let searchConditions = [];
+        if (search && search.trim() !== '') {
+            const searchTerm = `%${search.trim()}%`;
+            searchConditions.push(`full_name.ilike.${searchTerm}`);
+            searchConditions.push(`email.ilike.${searchTerm}`);
+        }
+        
+        const orFilter = searchConditions.length > 0 ? searchConditions.join(',') : null;
+
+        console.log("Search filter:", orFilter);
+
         // Get total count - simple query without joins
         let countQuery = supabase
             .from('profiles')
             .select('*', { count: 'exact', head: true });
 
-        if (search) {
-            countQuery = countQuery.or(`full_name.ilike.%${search}%,email.ilike.%${search}%`);
+        if (orFilter) {
+            countQuery = countQuery.or(orFilter);
         }
 
         const { count, error: countError } = await countQuery;
@@ -405,15 +419,17 @@ exports.get_customers_database = async (req, res) => {
             throw new Error(countError.message);
         }
 
+        console.log("Total count:", count);
+
         // Get paginated data - simple query
         let dataQuery = supabase
             .from('profiles')
             .select('*')
             .order('created_at', { ascending: false })
-            .range(offset, offset + parseInt(limit) - 1);
+            .range(offset, offset + limit - 1);
 
-        if (search) {
-            dataQuery = dataQuery.or(`full_name.ilike.%${search}%,email.ilike.%${search}%`);
+        if (orFilter) {
+            dataQuery = dataQuery.or(orFilter);
         }
 
         const { data: customers, error } = await dataQuery;
@@ -421,6 +437,8 @@ exports.get_customers_database = async (req, res) => {
             console.error("Customer query error:", error);
             throw new Error(error.message);
         }
+
+        console.log("Found customers:", customers?.length || 0);
 
         // Get additional stats for each customer
         const customerIds = customers ? customers.map(c => c.id) : [];
