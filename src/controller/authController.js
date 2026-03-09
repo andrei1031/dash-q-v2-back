@@ -242,19 +242,29 @@ exports.login = async (req, res) => {
 exports.guest_login = (req, res) => {
   try {
     // Allow client to send an existing guestId to maintain session on refresh
-    const { guestId: existingId } = req.body;
+    const { guestId: existingId, nickname } = req.body;
+    
+    // Validate nickname if provided
+    const guestNickname = nickname && nickname.trim().length >= 2 ? nickname.trim() : `Guest_${Math.floor(Math.random() * 10000)}`;
+    
     const guestId = existingId || uuidv4();
 
     const payload = {
       sub: guestId,
       role: "guest",
-      type: "guest"
+      type: "guest",
+      nickname: guestNickname
     };
 
     const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "2h" });
 
     return res.status(200).json({
-      user: { id: guestId, role: "guest" },
+      user: { 
+        id: guestId, 
+        role: "guest",
+        nickname: guestNickname,
+        user_metadata: { full_name: guestNickname }
+      },
       token
     });
   } catch (e) {
