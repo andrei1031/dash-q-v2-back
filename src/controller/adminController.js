@@ -286,18 +286,10 @@ exports.get_analytics_with_filter = async (req, res) => {
     }
 
     try {
-        // Build query based on date filter
+        // Build query based on date filter - WITHOUT joins since relationship may not exist
         let query = supabase
             .from('services_completed')
-            .select(`
-                id,
-                created_at,
-                price,
-                head_count,
-                barber_id,
-                barber_profiles(full_name),
-                services(name)
-            `)
+            .select('*')
             .order('created_at', { ascending: false });
 
         if (startDate) {
@@ -320,7 +312,7 @@ exports.get_analytics_with_filter = async (req, res) => {
         if (completedServices) {
             completedServices.forEach(item => {
                 const barberId = item.barber_id;
-                const barberName = item.barber_profiles?.full_name || 'Unknown';
+                const barberName = 'Unknown Barber'; // Will need separate query if needed
                 
                 if (!barberMap[barberId]) {
                     barberMap[barberId] = {
@@ -333,6 +325,23 @@ exports.get_analytics_with_filter = async (req, res) => {
                 barberMap[barberId].cuts += (item.head_count || 1);
                 barberMap[barberId].revenue += (item.price || 0);
             });
+        }
+
+        // Try to get barber names if we have any
+        const barberIds = Object.keys(barberMap);
+        if (barberIds.length > 0) {
+            const { data: barberProfiles } = await supabase
+                .from('barber_profiles')
+                .select('id, full_name')
+                .in('id', barberIds);
+            
+            if (barberProfiles) {
+                barberProfiles.forEach(bp => {
+                    if (barberMap[bp.id]) {
+                        barberMap[bp.id].full_name = bp.full_name;
+                    }
+                });
+            }
         }
 
         const barberStats = Object.values(barberMap).sort((a, b) => b.revenue - a.revenue);
@@ -381,7 +390,7 @@ exports.get_customers_database = async (req, res) => {
     console.log("Fetching customers - page:", page, "search:", search);
 
     try {
-        // Get total count
+        // Get total count - simple query without joins
         let countQuery = supabase
             .from('profiles')
             .select('*', { count: 'exact', head: true });
@@ -396,10 +405,10 @@ exports.get_customers_database = async (req, res) => {
             throw new Error(countError.message);
         }
 
-        // Get paginated data
+        // Get paginated data - simple query
         let dataQuery = supabase
             .from('profiles')
-            .select('id, full_name, email, role, created_at')
+            .select('*')
             .order('created_at', { ascending: false })
             .range(offset, offset + parseInt(limit) - 1);
 
@@ -437,7 +446,11 @@ exports.get_customers_database = async (req, res) => {
         });
 
         const enrichedCustomers = customers ? customers.map(customer => ({
-            ...customer,
+            id: customer.id,
+            full_name: customer.full_name,
+            email: customer.email,
+            role: customer.role,
+            created_at: customer.created_at,
             visits: customerStatsMap[customer.id]?.visits || 0,
             totalSpent: customerStatsMap[customer.id]?.totalSpent || 0
         })) : [];
