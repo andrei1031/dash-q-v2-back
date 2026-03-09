@@ -392,15 +392,13 @@ exports.get_customers_database = async (req, res) => {
     console.log("Fetching customers - page:", page, "search:", search);
 
     try {
-        // Build search filter - use proper Supabase or() syntax
-        let searchConditions = [];
+        // Build search filter - use proper Supabase .or() syntax
+        let orFilter = null;
         if (search && search.trim() !== '') {
             const searchTerm = `%${search.trim()}%`;
-            searchConditions.push(`full_name.ilike.${searchTerm}`);
-            searchConditions.push(`email.ilike.${searchTerm}`);
+            // Use proper Supabase or() filter syntax
+            orFilter = `full_name.ilike.${searchTerm},email.ilike.${searchTerm}`;
         }
-        
-        const orFilter = searchConditions.length > 0 ? searchConditions.join(',') : null;
 
         console.log("Search filter:", orFilter);
 
