@@ -48,9 +48,6 @@ app.use('/api', subscribe);
 const check_email = require('./routes/authRoutes');
 app.use('/api', check_email);
 
-const next_customer = require('./routes/adminRoutes');
-app.use('/api/admin', next_customer);
-
 const location = require('./routes/queueRoutes');
 app.use('/api/queue', location);
 
@@ -147,62 +144,12 @@ app.use('/api', get_feedback_barber)
 const missed_events = require('./routes/eventRoutes');
 app.use('/api', missed_events);
 
-const add_admin_services = require('./routes/adminRoutes');
-app.use('/api', add_admin_services);
-
-const update_admin_service = require('./routes/adminRoutes');
-app.use('/api', update_admin_service);
-
-const admin_all_services = require('./routes/adminRoutes');
-app.use('/api', admin_all_services);
-
-const restore_admin_service = require('./routes/adminRoutes');
-app.use('/api', restore_admin_service);
-
-const remove_admin_service = require('./routes/adminRoutes');
-app.use('/api', remove_admin_service);
-
-const get_all_barbers = require('./routes/barberRoutes');
-app.use('/api', get_all_barbers);
-
-const barbers_status = require('./routes/barberRoutes');
-app.use('/api', barbers_status);
-
-const get_admin_stats = require('./routes/adminRoutes');
-app.use('/api', get_admin_stats);
-
-const queue_transfer = require('./routes/adminRoutes');
-app.use('/api', queue_transfer);
-
-const get_admin_analytics = require('./routes/adminRoutes');
-app.use('/api', get_admin_analytics);
-
-const get_all_users = require('./routes/adminRoutes');
-app.use('/api', get_all_users);
-
-const remove_user = require('./routes/adminRoutes');
-app.use('/api', remove_user);
-
-const force_next = require('./routes/adminRoutes');
-app.use('/api', force_next);
-
-const admin_active_chats = require('./routes/chatRoutes');
-app.use('/api', admin_active_chats);
-
-const admin_chats_reply = require('./routes/chatRoutes');
-app.use('/api', admin_chats_reply);
+// Admin routes - mounted once at /api/admin
+const adminRoutes = require('./routes/adminRoutes');
+app.use('/api/admin', adminRoutes);
 
 const submit_reports = require('./routes/reportsRoutes');
 app.use('/api', submit_reports);
-
-const get_all_reports = require('./routes/reportsRoutes');
-app.use('/api', get_all_reports);
-
-const get_all_appointments = require('./routes/appointmentRoutes');
-app.use('/api', get_all_appointments);
-
-const admin_reports_resolve = require('./routes/reportsRoutes');
-app.use('/api', admin_reports_resolve);
 
 const get_user_submitted_reports = require('./routes/reportsRoutes');
 app.use('/api', get_user_submitted_reports);

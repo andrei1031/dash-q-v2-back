@@ -11,8 +11,6 @@ const {
 } = require('../controller/reportsController');
 
 router.post('/reports', submit_reports);
-router.get('/admin/reports', get_all_reports);
-router.put('/admin/reports/resolve', admin_reports_resolve);
 router.get('/reports/my/:userId', get_user_submitted_reports);
 
 module.exports = router;

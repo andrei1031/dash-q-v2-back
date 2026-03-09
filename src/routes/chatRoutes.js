@@ -12,7 +12,5 @@ const {
 
 router.post('/send', send);
 router.put('/read', read);
-router.get('/admin/active-chats', admin_active_chats);
-router.post('/admin/chat/reply', admin_chats_reply);
 
 module.exports = router;

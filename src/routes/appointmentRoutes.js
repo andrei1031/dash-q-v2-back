@@ -19,7 +19,6 @@ router.post('/book', book);
 router.put('/reject', reject);
 router.put('/approve', approve);
 router.get('/my/:userId', get_customer_appointments);
-router.get('/admin/appointments', get_all_appointments);
 router.get('/appointments/barber/:barberId', get_barber_appointments);
 router.get('/test/process-appointments', process_appointments);
 
