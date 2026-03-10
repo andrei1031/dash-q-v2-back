@@ -502,33 +502,61 @@ exports.export_analytics_csv = async (req, res) => {
     }
 
     try {
+        // Fetch basic data from services_completed - use simple select without joins
         let query = supabase
             .from('services_completed')
-            .select(`
-                created_at,
-                price,
-                head_count,
-                customer_name,
-                barber_profiles(full_name),
-                services(name)
-            `)
+            .select('*')
             .order('created_at', { ascending: false });
 
         if (startDate) {
             query = query.gte('created_at', startDate.toISOString());
         }
 
-        const { data, error } = await query;
+        const { data: completedServices, error } = await query;
         if (error) throw error;
+
+        // Get unique barber IDs and service IDs
+        const barberIds = [...new Set(completedServices?.map(s => s.barber_id).filter(Boolean) || [])];
+        const serviceIds = [...new Set(completedServices?.map(s => s.service_id).filter(Boolean) || [])];
+
+        // Fetch barber profiles and services separately
+        let barberMap = {};
+        let serviceMap = {};
+
+        if (barberIds.length > 0) {
+            const { data: barberProfiles } = await supabase
+                .from('barber_profiles')
+                .select('id, full_name')
+                .in('id', barberIds);
+            
+            if (barberProfiles) {
+                barberProfiles.forEach(bp => {
+                    barberMap[bp.id] = bp.full_name;
+                });
+            }
+        }
+
+        if (serviceIds.length > 0) {
+            const { data: services } = await supabase
+                .from('services')
+                .select('id, name')
+                .in('id', serviceIds);
+            
+            if (services) {
+                services.forEach(s => {
+                    serviceMap[s.id] = s.name;
+                });
+            }
+        }
 
         // Convert to CSV
         const headers = ['Date', 'Time', 'Customer Name', 'Service', 'Barber', 'Heads', 'Price'];
-        const rows = data.map(item => [
+        const rows = (completedServices || []).map(item => [
             new Date(item.created_at).toLocaleDateString(),
             new Date(item.created_at).toLocaleTimeString(),
             item.customer_name || 'Guest',
-            item.services?.name || 'Unknown',
-            item.barber_profiles?.full_name || 'Unknown',
+            serviceMap[item.service_id] || 'Unknown',
+            barberMap[item.barber_id] || 'Unknown',
             item.head_count || 1,
             item.price || 0
         ]);
@@ -683,3 +711,4 @@ exports.force_next = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 }
+
