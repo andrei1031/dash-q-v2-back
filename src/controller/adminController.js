@@ -329,24 +329,63 @@ exports.get_analytics_with_filter = async (req, res) => {
             });
         }
 
-        // Try to get barber names if we have any
+        // Try to get barber names and additional info if we have any
         const barberIds = Object.keys(barberMap);
         if (barberIds.length > 0) {
             const { data: barberProfiles } = await supabase
                 .from('barber_profiles')
-                .select('id, full_name')
+                .select('id, full_name, is_active')
                 .in('id', barberIds);
             
             if (barberProfiles) {
                 barberProfiles.forEach(bp => {
                     if (barberMap[bp.id]) {
                         barberMap[bp.id].full_name = bp.full_name;
+                        barberMap[bp.id].is_active = bp.is_active;
+                    }
+                });
+            }
+            
+            // Get ratings for these barbers
+            const { data: ratings } = await supabase
+                .from('feedback')
+                .select('barber_id, score')
+                .in('barber_id', barberIds);
+            
+            if (ratings) {
+                // Calculate avg rating and review count per barber
+                const ratingMap = {};
+                ratings.forEach(r => {
+                    if (!ratingMap[r.barber_id]) {
+                        ratingMap[r.barber_id] = { total: 0, count: 0 };
+                    }
+                    ratingMap[r.barber_id].total += (r.score || 0);
+                    ratingMap[r.barber_id].count += 1;
+                });
+                
+                // Apply ratings to barber stats
+                Object.keys(ratingMap).forEach(bid => {
+                    if (barberMap[bid]) {
+                        const ratingData = ratingMap[bid];
+                        barberMap[bid].avg_rating = ratingData.count > 0 ? (ratingData.total / ratingData.count).toFixed(1) : 0;
+                        barberMap[bid].review_count = ratingData.count;
                     }
                 });
             }
         }
 
-        const barberStats = Object.values(barberMap).sort((a, b) => b.revenue - a.revenue);
+        // Transform barber stats to match frontend expected field names
+        const barberStats = Object.values(barberMap).map(b => ({
+            barber_id: b.barber_id,
+            full_name: b.full_name,
+            is_active: b.is_active !== undefined ? b.is_active : true,
+            cut_count: b.cuts, // Frontend expects 'cut_count'
+            total_revenue: b.revenue, // Frontend expects 'total_revenue'
+            revenue: b.revenue,
+            cuts: b.cuts,
+            avg_rating: b.avg_rating || 0,
+            review_count: b.review_count || 0
+        })).sort((a, b) => b.revenue - a.revenue);
 
         // Get daily trend data
         const dailyMap = {};
