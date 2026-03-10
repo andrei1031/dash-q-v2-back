@@ -70,13 +70,21 @@ exports.slots = async (req, res) => {
             });
 
             if (!isTaken) {
-                // Push as Philippines time (+08:00)
-                const year = slotStart.getFullYear();
-                const month = String(slotStart.getMonth() + 1).padStart(2, '0');
-                const day = String(slotStart.getDate()).padStart(2, '0');
-                const hours = String(slotStart.getHours()).padStart(2, '0');
-                const minutes = String(slotStart.getMinutes()).padStart(2, '0');
-                const seconds = String(slotStart.getSeconds()).padStart(2, '0');
+                // The simplest approach: extract time parts directly from slotIterator 
+                // Since the Date was created from +08:00 string, getUTCHours() gives us the UTC hour
+                // But we want the PH hour which is +08:00 from UTC
+                
+                // Get the time in milliseconds and convert to PH hours
+                const utcTime = slotIterator.getTime();
+                const phTime = new Date(utcTime + (8 * 60 * 60 * 1000));
+                
+                const year = phTime.getUTCFullYear();
+                const month = String(phTime.getUTCMonth() + 1).padStart(2, '0');
+                const day = String(phTime.getUTCDate()).padStart(2, '0');
+                const hours = String(phTime.getUTCHours()).padStart(2, '0');
+                const minutes = String(phTime.getUTCMinutes()).padStart(2, '0');
+                const seconds = String(phTime.getUTCSeconds()).padStart(2, '0');
+                
                 const phTimeString = `${year}-${month}-${day}T${hours}:${minutes}:${seconds}+08:00`;
                 slots.push(phTimeString);
             }
