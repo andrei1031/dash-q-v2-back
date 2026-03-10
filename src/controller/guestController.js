@@ -80,20 +80,28 @@ exports.join_as_guest = async (req, res) => {
         if (error) throw error;
         
         // Check if "Up Next" slot is empty and promote immediately (Atomic & Safe)
-        const promotedCustomers = await enforceQueueLogic(parseInt(barberId));
+        // Wrap in try-catch to prevent crashes
+        try {
+            if (barberId) {
+                const promotedCustomers = await enforceQueueLogic(parseInt(barberId));
 
-        // If our guest was promoted, update the response data
-        if (promotedCustomers && promotedCustomers.length > 0) {
-            const myPromotion = promotedCustomers.find(p => p.id === data.id);
-            if (myPromotion) {
-                data = myPromotion;
+                // If our guest was promoted, update the response data
+                if (promotedCustomers && promotedCustomers.length > 0) {
+                    const myPromotion = promotedCustomers.find(p => p.id === data.id);
+                    if (myPromotion) {
+                        data = myPromotion;
+                    }
+                }
             }
+        } catch (promoError) {
+            // Log but don't fail the join if promotion fails
+            console.error("Guest join promotion error:", promoError.message);
         }
 
         res.status(201).json({ success: true, message: "Joined queue as guest.", data: data });
 
     } catch (error) {
-        console.error("Guest join error:", error.message);
-        res.status(500).json({ error: "Failed to join queue." });
+        console.error("Guest join error:", error.message, error);
+        res.status(500).json({ error: "Failed to join queue. " + error.message });
     }
 };
