@@ -508,6 +508,7 @@ exports.export_analytics_csv = async (req, res) => {
                 created_at,
                 price,
                 head_count,
+                customer_name,
                 barber_profiles(full_name),
                 services(name)
             `)
