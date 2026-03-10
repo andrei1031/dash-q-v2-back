@@ -167,6 +167,10 @@ app.use('/api', settings);
 const deviceRoutes = require('./routes/deviceRoutes');
 app.use('/api', deviceRoutes);
 
+// Guest queue routes
+const guestRoutes = require('./routes/guestRoutes');
+app.use('/api/guest', guestRoutes);
+
 // API ENDPOINTS END
 
 const server = http.createServer(app);
