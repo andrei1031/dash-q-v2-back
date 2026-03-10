@@ -54,7 +54,7 @@ exports.join_as_guest = async (req, res) => {
         }
 
         // Insert guest into queue
-        // We set user_id to null and is_guest to true
+        // We set user_id to the guestId and mark them as guest via nickname pattern
         let { data, error } = await supabase
             .from('queue_entries')
             .insert([
@@ -63,7 +63,6 @@ exports.join_as_guest = async (req, res) => {
                     barber_id: parseInt(barberId),
                     service_id: parseInt(serviceId),
                     user_id: finalGuestId, // Use computed ID to prevent conflicts
-                    is_guest: true,
                     status: 'Waiting',
                     head_count: headCount || 1,
                     reference_image_url: referenceImageUrl || null,
