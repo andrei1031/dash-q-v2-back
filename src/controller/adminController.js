@@ -422,7 +422,7 @@ exports.get_analytics_with_filter = async (req, res) => {
 }
 
 /**
- * ENDPOINT: Customer Database with Pagination
+ * ENDPOINT: Customer Database with Pagination and Loyalty Info
  */
 exports.get_customers_database = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
@@ -480,16 +480,39 @@ exports.get_customers_database = async (req, res) => {
         const totalCount = filteredUsers.length;
         const paginatedUsers = filteredUsers.slice(offset, offset + limit);
         
-        // Transform to customer format
-        const customers = paginatedUsers.map(user => ({
-            id: user.id,
-            full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Unknown',
-            email: user.email,
-            role: 'customer',
-            created_at: user.created_at,
-            visits: 0,
-            totalSpent: 0
-        }));
+        // Get all user IDs to fetch loyalty data
+        const userIds = paginatedUsers.map(u => u.id);
+        
+        // Fetch loyalty data for all paginated users
+        let loyaltyMap = {};
+        if (userIds.length > 0) {
+            const { data: loyaltyRecords, error: loyaltyError } = await db
+                .from('customer_loyalty')
+                .select('user_id, total_spent, total_visits, total_points, current_tier')
+                .in('user_id', userIds);
+            
+            if (!loyaltyError && loyaltyRecords) {
+                loyaltyRecords.forEach(record => {
+                    loyaltyMap[record.user_id] = record;
+                });
+            }
+        }
+        
+        // Transform to customer format with loyalty data
+        const customers = paginatedUsers.map(user => {
+            const loyalty = loyaltyMap[user.id] || {};
+            return {
+                id: user.id,
+                full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Unknown',
+                email: user.email,
+                role: 'customer',
+                created_at: user.created_at,
+                visits: loyalty.total_visits || 0,
+                totalSpent: loyalty.total_spent || 0,
+                loyaltyPoints: loyalty.total_points || 0,
+                loyaltyTier: loyalty.current_tier || 'bronze'
+            };
+        });
 
         console.log("Returning customers:", customers.length);
 

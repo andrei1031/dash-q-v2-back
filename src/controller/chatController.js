@@ -2,6 +2,7 @@ const { createNotificationHelpers } = require('../utils/notifications');
 const { supabase } = require("../database/supabase");
 const  setupVapid  = require('../config/vapid');
 const filter = require('../utils/profanity')
+const { isAdmin } = require('../utils/admin');
 const webPush = setupVapid()
 
 const { sendPushNotification } = createNotificationHelpers({ supabase, webPush });
@@ -136,7 +137,15 @@ exports.admin_active_chats = async (req, res) => {
             .in('status', ['Waiting', 'Up Next', 'In Progress'])
             .order('updated_at', { ascending: false });
 
-        if (error) throw error;
+        if (error) {
+            console.error("Error fetching queue entries:", error);
+            return res.status(500).json({ error: error.message });
+        }
+
+        // If no entries, return empty array
+        if (!entries || entries.length === 0) {
+            return res.json([]);
+        }
 
         // 2. Filter & Count: Only return entries with messages
         const activeChats = [];
@@ -177,7 +186,7 @@ exports.admin_active_chats = async (req, res) => {
 
     } catch (error) {
         console.error("Admin Chats Error:", error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: error.message, activeChats: [] });
     }
 }
 
