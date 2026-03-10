@@ -573,6 +573,35 @@ exports.complete = async (req, res) => {
         const { data, error: insertError } = await supabase.from('services_completed').insert([{ barber_id: barberIdInt, price: totalProfit, head_count: headCount }]).select();
         if (insertError) { console.error('Error logging service:', insertError.message); return res.status(500).json({ error: insertError.message }); }
 
+        // ============================================================
+        // 🎁 LOYALTY POINTS: Award points after service completion
+        // ============================================================
+        try {
+            // Get user_id from the queue entry to award points
+            const { data: queueEntryWithUser } = await supabase
+                .from('queue_entries')
+                .select('user_id')
+                .eq('id', queueIdInt)
+                .single();
+
+            if (queueEntryWithUser?.user_id) {
+                // Call loyalty points API (fire and forget - don't wait)
+                const axios = require('axios');
+                const serviceTotal = baseTotal; // Base service price without tip/vip
+                
+                axios.post(`${process.env.API_URL || 'http://localhost:3001/api'}/loyalty/earn`, {
+                    userId: queueEntryWithUser.user_id,
+                    queueEntryId: queueIdInt,
+                    servicePrice: serviceTotal,
+                    serviceId: queueEntry?.service_id
+                }).catch(err => console.error('Failed to award loyalty points:', err.message));
+            }
+        } catch (pointsError) {
+            // Don't fail the transaction if points award fails
+            console.error('Loyalty points award error (non-blocking):', pointsError.message);
+        }
+        // ============================================================
+
         console.log(`[Complete] Successfully logged service for ${queueIdInt}. Checking to auto-fill Up Next...`);
         const promotedCustomers = await enforceQueueLogic(barberIdInt);
         const newUpNextCustomer = Array.isArray(promotedCustomers) ? promotedCustomers[0] : null;

@@ -171,6 +171,10 @@ app.use('/api', deviceRoutes);
 const guestRoutes = require('./routes/guestRoutes');
 app.use('/api/guest', guestRoutes);
 
+// Loyalty & Rewards routes
+const loyaltyRoutes = require('./routes/loyaltyRoutes');
+app.use('/api', loyaltyRoutes);
+
 // API ENDPOINTS END
 
 const server = http.createServer(app);
