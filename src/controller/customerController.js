@@ -41,6 +41,7 @@ exports.history = async (req, res) => {
     const { userId } = req.params;
 
     try {
+        // 1. Fetch queue entries (completed services)
         const { data, error } = await supabase.from('queue_entries')
             .select(`
                 created_at, 
@@ -52,11 +53,10 @@ exports.history = async (req, res) => {
                 score,
                 feedback_comment,
                 tip_amount  
-            `) // <--- ADDED tip_amount HERE
+            `)
             .eq('user_id', userId)
             .order('created_at', { ascending: false });
 
-        // If services_completed doesn't have user_id yet, fallback to queue_entries
         if (error) {
             const { data: fallbackData } = await supabase
                 .from('queue_entries')
@@ -71,18 +71,49 @@ exports.history = async (req, res) => {
             return res.json(fallbackData || []);
         }
 
-        // Format the data
-        const history = data.map(item => ({
-            created_at: item.created_at,
-            status: 'Done',
-            price_total: item.price,
-            head_count: item.head_count || 1,
-            barber_name: item.barber_profiles?.full_name,
-            score: item.feedback?.[0]?.score || null, // Get star rating
-            comments: item.feedback?.[0]?.comments || null
-        }));
+        // 2. Fetch customer loyalty data (total_spent, total_points, etc.)
+        let loyaltyData = null;
+        const { data: loyalty, loyaltyError } = await supabase
+            .from('customer_loyalty')
+            .select('total_spent, total_points, current_tier, total_visits, lifetime_points')
+            .eq('user_id', userId)
+            .single();
 
-        res.json(history);
+        if (!loyaltyError && loyalty) {
+            loyaltyData = loyalty;
+        }
+
+        // 3. Calculate total spent from history entries (for verification)
+        const history = data.map(item => {
+            const basePrice = parseFloat(item.services?.price_php || 0);
+            const heads = item.head_count || 1;
+            const vipFee = item.is_vip ? 100 : 0;
+            const tip = item.tip_amount ? parseFloat(item.tip_amount) : 0;
+            const totalCost = (basePrice * heads) + (vipFee * heads) + tip;
+
+            return {
+                created_at: item.created_at,
+                status: item.status === 'Done' ? 'Done' : 'Cancelled',
+                price_total: totalCost,
+                head_count: heads,
+                barber_name: item.barber_profiles?.full_name,
+                score: item.feedback?.[0]?.score || null,
+                comments: item.feedback?.[0]?.comments || null,
+                service_name: item.services?.name || 'Unknown Service'
+            };
+        });
+
+        // 4. Return both history AND loyalty data
+        res.json({
+            history: history,
+            loyalty: loyaltyData || {
+                total_spent: 0,
+                total_points: 0,
+                current_tier: 'bronze',
+                total_visits: 0,
+                lifetime_points: 0
+            }
+        });
 
     } catch (error) {
         console.error("Error fetching history:", error.message);
