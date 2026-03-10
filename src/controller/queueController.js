@@ -602,7 +602,7 @@ exports.complete = async (req, res) => {
                 axios.post(`${process.env.API_URL || 'http://localhost:3001/api'}/loyalty/earn`, {
                     userId: queueEntryWithUser.user_id,
                     queueEntryId: queueIdInt,
-                    servicePrice: serviceTotal, // base service price (without tip/vip)
+                    servicePrice: servicePrice, // base price per person
                     serviceId: queueEntry?.service_id,
                     headCount: headCount,
                     vipCharge: vipCharge,
