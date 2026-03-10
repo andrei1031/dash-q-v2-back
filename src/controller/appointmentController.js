@@ -69,7 +69,15 @@ exports.slots = async (req, res) => {
             });
 
             if (!isTaken) {
-                slots.push(slotStart.toISOString());
+                // Push as Philippines time (+08:00) instead of UTC
+                const year = slotStart.getFullYear();
+                const month = String(slotStart.getMonth() + 1).padStart(2, '0');
+                const day = String(slotStart.getDate()).padStart(2, '0');
+                const hours = String(slotStart.getHours()).padStart(2, '0');
+                const minutes = String(slotStart.getMinutes()).padStart(2, '0');
+                const seconds = String(slotStart.getSeconds()).padStart(2, '0');
+                const phTimeString = `${year}-${month}-${day}T${hours}:${minutes}:${seconds}+08:00`;
+                slots.push(phTimeString);
             }
 
             slotIterator.setMinutes(slotIterator.getMinutes() + 30);
@@ -87,12 +95,14 @@ exports.slots = async (req, res) => {
  * ENDPOINT: Book an Appointment
  * - Enforces "Tomorrow Only" rule (blocks booking for today or past dates).
  * - Enforces strict 1-customer-per-slot rule (prevents overlaps).
+ * - FIXED: Stores time in Philippines timezone (+08:00) to prevent UTC conversion issues
  */
 exports.book = async (req, res) => {
     const { customer_name, customer_email, user_id, barber_id, service_id, scheduled_time } = req.body;
     
     try {
         // --- 1. VALIDATION: Block "Today" and Past Appointments ---
+        // Parse the incoming time as Philippines time
         const appointmentDate = new Date(scheduled_time);
         const now = new Date();
 
@@ -118,19 +128,37 @@ exports.book = async (req, res) => {
 
         // 3. STRICT CONFLICT CHECK (Race Condition Prevention)
         // This ensures Customer B cannot book if Customer A already has this slot.
-        // Logic: Is there any confirmed appointment that Starts BEFORE this one Ends AND Ends AFTER this one Starts?
+        // For conflict check, we need to use the local time (with +08:00) for comparison
+        const startDatePH = new Date(startDate.getTime() + (8 * 60 * 60 * 1000));
+        const endDatePH = new Date(endDate.getTime() + (8 * 60 * 60 * 1000));
+
         const { data: conflict } = await supabase
             .from('appointments')
             .select('id')
             .eq('barber_id', barber_id)
-            .in('status', ['confirmed', 'pending']) // <--- CHANGED
-            .lt('scheduled_time', endDate.toISOString())
-            .gt('end_time', startDate.toISOString())
+            .in('status', ['confirmed', 'pending'])
+            .lt('scheduled_time', endDatePH.toISOString())
+            .gt('end_time', startDatePH.toISOString())
             .maybeSingle();
 
         if (conflict) {
             return res.status(409).json({ error: 'Slot is pending approval or taken. Please choose another.' });
         }
+
+        // 4. FIXED: Store the time in Philippines timezone (+08:00) instead of UTC
+        // Extract the date/time parts and append +08:00 to preserve Philippines time
+        const formatPHDateTime = (date) => {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            const seconds = String(date.getSeconds()).padStart(2, '0');
+            return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}+08:00`;
+        };
+
+        const scheduledTimePH = formatPHDateTime(startDate);
+        const endTimePH = formatPHDateTime(endDate);
 
         // 4. Insert Appointment
         const { data, error } = await supabase.from('appointments').insert({
@@ -139,15 +167,15 @@ exports.book = async (req, res) => {
             user_id,
             barber_id,
             service_id,
-            scheduled_time: startDate.toISOString(),
-            end_time: endDate.toISOString(),
+            scheduled_time: scheduledTimePH,
+            end_time: endTimePH,
             status: 'pending', // Immediately confirmed
             is_converted_to_queue: false
         }).select().single();
 
         if (error) throw error;
 
-        console.log(`[Appointment] Booked for ${customer_name} on ${startDate.toISOString()}`);
+        console.log(`[Appointment] Booked for ${customer_name} on ${scheduledTimePH}`);
 
         try {
             // 1. Get Barber's Email from their User Profile
