@@ -15,26 +15,27 @@ exports.slots = async (req, res) => {
         const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', serviceId).single();
         const duration = service?.duration_minutes || 30;
 
-        // --- UPDATED HOURS HERE ---
-        // --- UPDATED HOURS HERE ---
+        // --- FIXED: Use Philippines timezone properly ---
         const PH_OFFSET = "+08:00";
         
-        // 1. OPENING TIME: 10:30 AM
+        // 1. OPENING TIME: 10:30 AM Philippines
         const startIso = `${date}T10:30:00${PH_OFFSET}`; 
         
-        // 2. CLOSING TIME: 7:00 PM (19:00)
-        // Note: The logic below automatically enforces the 6:30 PM cut-off.
-        // If a 30-min service starts at 6:30 PM, it ends at 7:00 PM (Allowed).
-        // If it tries to start at 6:40 PM, it ends at 7:10 PM (Blocked).
+        // 2. CLOSING TIME: 7:00 PM (19:00) Philippines
         const closeIso = `${date}T19:00:00${PH_OFFSET}`; 
 
+        // Parse dates as Philippines time
         let slotIterator = new Date(startIso);
         const closeTime = new Date(closeIso);
+        
+        // Get current time in Philippines timezone for comparison
         const now = new Date();
+        const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
 
-        // Fetch existing appointments...
-        const dbStart = new Date(`${date}T00:00:00${PH_OFFSET}`).toISOString();
-        const dbEnd = new Date(`${date}T23:59:59${PH_OFFSET}`).toISOString();
+        // Fetch existing appointments stored in PH time
+        // Query using the date string directly without conversion
+        const dbStart = `${date}T00:00:00${PH_OFFSET}`;
+        const dbEnd = `${date}T23:59:59${PH_OFFSET}`;
 
         const { data: bookings } = await supabase
             .from('appointments')
@@ -51,25 +52,25 @@ exports.slots = async (req, res) => {
             const slotEnd = new Date(slotIterator.getTime() + duration * 60000);
 
             // RULE A: STRICT CLOSING TIME (7:00 PM)
-            // If a 30-min cut starts at 6:30 PM, it ends at 7:00 PM (Allowed).
-            // If it starts at 6:40 PM, it ends at 7:10 PM (Blocked).
             if (slotEnd > closeTime) {
                 break;
             }
 
-            if (slotStart < now) {
+            // FIX: Compare against PH time, not server local time
+            if (slotStart < nowPH) {
                 slotIterator.setMinutes(slotIterator.getMinutes() + 30);
                 continue;
             }
 
             const isTaken = bookings.some(b => {
+                // Parse existing bookings as PH time
                 const bookStart = new Date(b.scheduled_time);
                 const bookEnd = new Date(b.end_time);
                 return (slotStart < bookEnd && slotEnd > bookStart);
             });
 
             if (!isTaken) {
-                // Push as Philippines time (+08:00) instead of UTC
+                // Push as Philippines time (+08:00)
                 const year = slotStart.getFullYear();
                 const month = String(slotStart.getMonth() + 1).padStart(2, '0');
                 const day = String(slotStart.getDate()).padStart(2, '0');
