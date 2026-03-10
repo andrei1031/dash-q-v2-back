@@ -40,17 +40,28 @@ exports.join_as_guest = async (req, res) => {
     try {
         // Check if the provided guestId is already active. If so, treat as new guest (null ID)
         // to allow multiple guest entries without conflict.
-        let finalGuestId = guestId || null;
-
-        if (finalGuestId) {
+        // Only use guestId if it's a valid UUID format
+        let finalGuestId = null;
+        
+        // Check if guestId exists and is a valid UUID format (not "guest-fallback")
+        if (guestId && guestId !== 'guest-fallback' && isValidUUID(guestId)) {
+            // Check if this guest already has an active queue entry
             const { data: active } = await supabase
                 .from('queue_entries')
                 .select('id')
-                .eq('user_id', finalGuestId)
+                .eq('user_id', guestId)
                 .in('status', ['Waiting', 'Up Next', 'In Progress'])
                 .maybeSingle();
             
-            if (active) finalGuestId = null;
+            if (!active) {
+                finalGuestId = guestId;
+            }
+        }
+
+        // Helper function to validate UUID
+        function isValidUUID(uuid) {
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+            return uuidRegex.test(uuid);
         }
 
         // Insert guest into queue
