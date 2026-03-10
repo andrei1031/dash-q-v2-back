@@ -774,3 +774,142 @@ exports.force_next = async (req, res) => {
     }
 }
 
+/**
+ * ENDPOINT: Recalculate Loyalty Data for All Customers
+ * This recalculates total_spent and total_visits from historical service records
+ */
+exports.recalculate_loyalty = async (req, res) => {
+    const { userId } = req.body;
+    
+    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    console.log("=== RECALCULATING LOYALTY DATA ===");
+
+    try {
+        // 1. Get all customers from auth
+        const { data: authUsers } = await supabaseAdmin.auth.admin.listUsers();
+        
+        // Get barber and admin user IDs to exclude
+        const { data: barberProfiles } = await db.from('barber_profiles').select('user_id');
+        const { data: profiles } = await db.from('profiles').select('id, role');
+        
+        const barberUserIds = new Set((barberProfiles || []).map(b => b.user_id));
+        const adminUserIds = new Set((profiles || []).filter(p => p.role === 'admin').map(p => p.id));
+        
+        // Filter to only customers
+        const customerUsers = (authUsers?.users || []).filter(u => {
+            if (barberUserIds.has(u.id)) return false;
+            if (adminUserIds.has(u.id)) return false;
+            const role = u.user_metadata?.role || u.role;
+            if (role === 'admin') return false;
+            return true;
+        });
+
+        console.log(`Found ${customerUsers.length} customers to process`);
+
+        // 2. For each customer, get their completed services and calculate totals
+        let processed = 0;
+        let errors = [];
+
+        for (const customer of customerUsers) {
+            try {
+                // Get all "Done" queue entries for this customer
+                const { data: completedEntries, error: entriesError } = await db
+                    .from('queue_entries')
+                    .select('id, head_count, is_vip, tip_amount, services(price_php, price_vip_php)')
+                    .eq('user_id', customer.id)
+                    .eq('status', 'Done');
+
+                if (entriesError) {
+                    console.error(`Error fetching entries for ${customer.id}:`, entriesError);
+                    continue;
+                }
+
+                if (!completedEntries || completedEntries.length === 0) {
+                    // No completed services - ensure loyalty record exists with zeros
+                    await db.from('customer_loyalty').upsert({
+                        user_id: customer.id,
+                        total_spent: 0,
+                        total_visits: 0,
+                        total_points: 0,
+                        lifetime_points: 0,
+                        current_tier: 'bronze'
+                    }, { onConflict: 'user_id' });
+                    continue;
+                }
+
+                // Calculate totals
+                let totalSpent = 0;
+                let totalVisits = 0;
+                let totalPoints = 0;
+
+                for (const entry of completedEntries) {
+                    const headCount = entry.head_count || 1;
+                    const isVip = entry.is_vip || false;
+                    const tip = parseFloat(entry.tip_amount) || 0;
+                    
+                    // Get service prices
+                    const basePrice = parseFloat(entry.services?.price_php) || 0;
+                    const vipPrice = parseFloat(entry.services?.price_vip_php) || basePrice;
+                    
+                    // Calculate this entry's total
+                    const servicePrice = isVip ? vipPrice : basePrice;
+                    const entryTotal = (servicePrice * headCount) + tip;
+                    
+                    totalSpent += entryTotal;
+                    totalVisits += headCount;
+                    
+                    // Calculate points (1 point per 10php spent)
+                    totalPoints += Math.floor(entryTotal / 10);
+                }
+
+                // Get current loyalty record if exists
+                const { data: existingLoyalty } = await db
+                    .from('customer_loyalty')
+                    .select('*')
+                    .eq('user_id', customer.id)
+                    .single();
+
+                // Determine tier
+                let newTier = 'bronze';
+                if (totalPoints >= 3000) newTier = 'platinum';
+                else if (totalPoints >= 1500) newTier = 'gold';
+                else if (totalPoints >= 500) newTier = 'silver';
+
+                // Upsert loyalty record
+                await db.from('customer_loyalty').upsert({
+                    user_id: customer.id,
+                    total_spent: totalSpent,
+                    total_visits: totalVisits,
+                    total_points: totalPoints,
+                    lifetime_points: totalPoints,
+                    current_tier: newTier,
+                    updated_at: new Date().toISOString()
+                }, { onConflict: 'user_id' });
+
+                processed++;
+                console.log(`Processed ${customer.email}: ${totalVisits} visits, ₱${totalSpent} spent, ${totalPoints} points`);
+
+            } catch (err) {
+                console.error(`Error processing customer ${customer.id}:`, err);
+                errors.push({ customerId: customer.id, error: err.message });
+            }
+        }
+
+        console.log(`=== RECALCULATION COMPLETE ===`);
+        console.log(`Processed: ${processed} customers`);
+        console.log(`Errors: ${errors.length}`);
+
+        res.json({
+            success: true,
+            message: `Recalculated loyalty data for ${processed} customers`,
+            processed: processed,
+            errors: errors
+        });
+
+    } catch (error) {
+        console.error("Recalculation error:", error);
+        res.status(500).json({ error: "Failed to recalculate loyalty: " + error.message });
+    }
+}
+

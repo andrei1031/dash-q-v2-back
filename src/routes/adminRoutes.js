@@ -16,7 +16,8 @@ const {
     force_next,
     get_analytics_with_filter,
     get_customers_database,
-    export_analytics_csv
+    export_analytics_csv,
+    recalculate_loyalty
 
 } = require('../controller/adminController');
 
@@ -41,6 +42,7 @@ router.get('/analytics/export', export_analytics_csv);
 router.get('/users', get_all_users);
 router.delete('/users/:targetId', remove_user);
 router.post('/force-next', force_next);
+router.post('/recalculate-loyalty', recalculate_loyalty);
 
 // Admin barbers routes
 router.get('/barbers', fetchAllBarbers);
