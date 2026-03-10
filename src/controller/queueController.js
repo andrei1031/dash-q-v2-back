@@ -587,13 +587,26 @@ exports.complete = async (req, res) => {
             if (queueEntryWithUser?.user_id) {
                 // Call loyalty points API (fire and forget - don't wait)
                 const axios = require('axios');
-                const serviceTotal = baseTotal; // Base service price without tip/vip
+                
+                // Get additional data needed for accurate loyalty calculation
+                const { data: queueEntryDetails } = await supabase
+                    .from('queue_entries')
+                    .select('head_count, is_vip')
+                    .eq('id', queueIdInt)
+                    .single();
+                
+                const headCount = queueEntryDetails?.head_count || 1;
+                const isVip = queueEntryDetails?.is_vip || false;
+                const vipCharge = isVip ? vipChargeInt : 0;
                 
                 axios.post(`${process.env.API_URL || 'http://localhost:3001/api'}/loyalty/earn`, {
                     userId: queueEntryWithUser.user_id,
                     queueEntryId: queueIdInt,
-                    servicePrice: serviceTotal,
-                    serviceId: queueEntry?.service_id
+                    servicePrice: serviceTotal, // base service price (without tip/vip)
+                    serviceId: queueEntry?.service_id,
+                    headCount: headCount,
+                    vipCharge: vipCharge,
+                    tipAmount: tipInt
                 }).catch(err => console.error('Failed to award loyalty points:', err.message));
             }
         } catch (pointsError) {

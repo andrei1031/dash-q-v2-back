@@ -239,7 +239,7 @@ exports.applyRewardToService = async (req, res) => {
 // POST /api/loyalty/earn - Earn points after service completion (called from queue completion)
 exports.earnPointsOnService = async (req, res) => {
     try {
-        const { userId, queueEntryId, servicePrice, serviceId } = req.body;
+        const { userId, queueEntryId, servicePrice, serviceId, headCount, vipCharge, tipAmount } = req.body;
 
         if (!userId || !servicePrice) {
             return res.status(400).json({ error: 'Missing required fields' });
@@ -253,6 +253,7 @@ exports.earnPointsOnService = async (req, res) => {
             .single();
 
         // Calculate points: 1 point per 10php spent, with tier multiplier
+        // Points are based on base service price (before tip/vip)
         let multiplier = 1.0;
         if (loyalty) {
             switch (loyalty.current_tier) {
@@ -262,7 +263,16 @@ exports.earnPointsOnService = async (req, res) => {
             }
         }
 
-        const pointsEarned = Math.floor((servicePrice / 10) * multiplier);
+        // Use headCount if provided, otherwise default to 1
+        const heads = headCount || 1;
+        const basePrice = parseFloat(servicePrice) * heads;
+        
+        // Calculate total spent: base price + VIP charge + tip
+        const vipFee = parseFloat(vipCharge) || 0;
+        const tip = parseFloat(tipAmount) || 0;
+        const totalSpent = basePrice + vipFee + tip;
+
+        const pointsEarned = Math.floor((basePrice / 10) * multiplier);
 
         if (loyalty) {
             // Update existing
@@ -277,8 +287,8 @@ exports.earnPointsOnService = async (req, res) => {
                     total_points: newTotalPoints,
                     lifetime_points: loyalty.lifetime_points + pointsEarned,
                     current_tier: newTier,
-                    total_spent: parseFloat(loyalty.total_spent) + parseFloat(servicePrice),
-                    total_visits: loyalty.total_visits + 1,
+                    total_spent: parseFloat(loyalty.total_spent) + totalSpent,
+                    total_visits: loyalty.total_visits + heads,
                     updated_at: new Date().toISOString()
                 })
                 .eq('user_id', userId);
@@ -291,8 +301,8 @@ exports.earnPointsOnService = async (req, res) => {
                     total_points: pointsEarned,
                     lifetime_points: pointsEarned,
                     current_tier: 'bronze',
-                    total_spent: servicePrice,
-                    total_visits: 1
+                    total_spent: totalSpent,
+                    total_visits: heads
                 });
         }
 
