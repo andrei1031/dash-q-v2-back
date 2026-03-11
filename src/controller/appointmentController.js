@@ -111,19 +111,34 @@ exports.book = async (req, res) => {
     
     try {
         // --- 1. VALIDATION: Block "Today" and Past Appointments ---
-        // Parse the incoming time as Philippines time
-        const appointmentDate = new Date(scheduled_time);
+        // Extract date parts directly from the incoming timezone string
+        const extractDateParts = (isoString) => {
+            const match = isoString.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+            if (!match) return null;
+            return {
+                year: parseInt(match[1]),
+                month: parseInt(match[2]),
+                day: parseInt(match[3]),
+                hours: parseInt(match[4]),
+                minutes: parseInt(match[5])
+            };
+        };
+
+        const timeParts = extractDateParts(scheduled_time);
+        if (!timeParts) {
+            return res.status(400).json({ error: 'Invalid time format' });
+        }
+
+        // Get current time in Philippines timezone for comparison
         const now = new Date();
-
-        // Adjust 'now' to Philippines time (UTC+8) to ensure fairness regardless of server location
         const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
-
-        // Compare dates using YYYY-MM-DD format strings
-        const apptDateString = appointmentDate.toISOString().split('T')[0];
-        const nowDateString = nowPH.toISOString().split('T')[0];
+        
+        // Create appointment date in PH timezone for comparison
+        const appointmentPH = new Date(timeParts.year, timeParts.month - 1, timeParts.day, timeParts.hours, timeParts.minutes);
 
         // If the appointment is Today or in the Past, reject it
-        if (apptDateString <= nowDateString) {
+        // Compare using timestamps
+        if (appointmentPH.getTime() <= nowPH.getTime()) {
             return res.status(400).json({ error: 'Appointments must be booked at least 1 day in advance.' });
         }
         // -----------------------------------------------------------
@@ -132,42 +147,60 @@ exports.book = async (req, res) => {
         const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', service_id).single();
         const duration = service?.duration_minutes || 30;
 
-        const startDate = new Date(scheduled_time);
-        const endDate = new Date(startDate.getTime() + duration * 60000);
-
         // 3. STRICT CONFLICT CHECK (Race Condition Prevention)
         // This ensures Customer B cannot book if Customer A already has this slot.
-        // For conflict check, we need to use the local time (with +08:00) for comparison
-        const startDatePH = new Date(startDate.getTime() + (8 * 60 * 60 * 1000));
-        const endDatePH = new Date(endDate.getTime() + (8 * 60 * 60 * 1000));
+        // Use the original string to calculate end time for conflict check
+        const startDate = new Date(scheduled_time);
+        const endDate = new Date(startDate.getTime() + duration * 60000);
 
         const { data: conflict } = await supabase
             .from('appointments')
             .select('id')
             .eq('barber_id', barber_id)
             .in('status', ['confirmed', 'pending'])
-            .lt('scheduled_time', endDatePH.toISOString())
-            .gt('end_time', startDatePH.toISOString())
+            .lt('scheduled_time', endDate.toISOString())
+            .gt('end_time', startDate.toISOString())
             .maybeSingle();
 
         if (conflict) {
             return res.status(409).json({ error: 'Slot is pending approval or taken. Please choose another.' });
         }
 
-        // 4. FIXED: Store the time in Philippines timezone (+08:00) instead of UTC
-        // Extract the date/time parts and append +08:00 to preserve Philippines time
-        const formatPHDateTime = (date) => {
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            const hours = String(date.getHours()).padStart(2, '0');
-            const minutes = String(date.getMinutes()).padStart(2, '0');
-            const seconds = String(date.getSeconds()).padStart(2, '0');
-            return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}+08:00`;
+        // 4. Store the time - use the original timezone string from frontend
+        // The scheduled_time from frontend is already in +08:00 format: "2024-01-15T10:30:00+08:00"
+        // Simply pass it through directly - no Date parsing needed!
+        const scheduledTimePH = scheduled_time;
+        
+        // Calculate end time by extracting the time portion from original string and adding duration
+        const extractTimeParts = (isoString) => {
+            // Match pattern: YYYY-MM-DDTHH:MM:SS+08:00
+            const match = isoString.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+            if (!match) return null;
+            return {
+                year: parseInt(match[1]),
+                month: parseInt(match[2]),
+                day: parseInt(match[3]),
+                hours: parseInt(match[4]),
+                minutes: parseInt(match[5]),
+                seconds: parseInt(match[6])
+            };
         };
-
-        const scheduledTimePH = formatPHDateTime(startDate);
-        const endTimePH = formatPHDateTime(endDate);
+        
+        const startTimeParts = extractTimeParts(scheduled_time);
+        if (!startTimeParts) {
+            return res.status(400).json({ error: 'Invalid time format' });
+        }
+        
+        // Add duration to get end time
+        let totalMinutes = startTimeParts.hours * 60 + startTimeParts.minutes + duration;
+        let endHours = Math.floor(totalMinutes / 60);
+        let endMinutes = totalMinutes % 60;
+        
+        const formatTime = (h, m, s) => {
+            return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}+08:00`;
+        };
+        
+        const endTimePH = `${startTimeParts.year}-${String(startTimeParts.month).padStart(2, '0')}-${String(startTimeParts.day).padStart(2, '0')}T${formatTime(endHours, endMinutes, startTimeParts.seconds)}`;
 
         // 4. Insert Appointment
         const { data, error } = await supabase.from('appointments').insert({
