@@ -1,4 +1,6 @@
 const { supabase } = require("../database/supabase");
+const { isAdmin } = require("../utils/admin");
+
 
 /**
  * ENDPOINT: Get Barbers with Ratings & PRECISE Queue Size
