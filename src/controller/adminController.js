@@ -641,22 +641,36 @@ exports.export_analytics_csv = async (req, res) => {
  * ENDPOINT: Get All Users (Robust Version)
  */
 exports.get_all_users = async (req, res) => {
-    try {
-        console.log("GET /api/admin/users - Fetching profiles...");
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = (page - 1) * limit;
 
-        // FIX: Select ALL columns (*) to avoid errors if specific columns are missing
-        // We also remove the .order() temporarily to rule out sorting errors
+    try {
+        console.log(`GET /api/admin/users?page=${page}&limit=${limit} - Fetching profiles...`);
+
         const { data, error } = await supabase
             .from('profiles')
             .select('*');
 
         if (error) {
-            console.error("Supabase Error fetching profiles:", error.message);
+            console.error("Supabase Error fetching profiles:", error);
             throw error;
         }
 
-        console.log(`Found ${data.length} profiles.`);
-        res.json(data);
+        const totalCount = data.length;
+        const paginatedUsers = data.slice(offset, offset + limit);
+
+        console.log(`Found ${totalCount} total profiles, returning ${paginatedUsers.length} from page ${page}`);
+
+        res.json({
+            users: paginatedUsers,
+            pagination: {
+                page,
+                limit,
+                total: totalCount,
+                totalPages: Math.ceil(totalCount / limit)
+            }
+        });
     } catch (error) {
         console.error("Error fetching users:", error.message);
         res.status(500).json({ error: "Failed to load users: " + error.message });
