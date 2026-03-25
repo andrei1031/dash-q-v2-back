@@ -286,6 +286,18 @@ exports.guest_login = async (req, res) => {
     }
     // --- END DEVICE BLOCKING CHECK ---
 
+    // Check for active duplicate nickname
+    const { data: activeGuest } = await supabase
+      .from('queue_entries')
+      .select('id')
+      .eq('customer_name', guestNickname)
+      .in('status', ['Waiting', 'Up Next', 'In Progress'])
+      .limit(1);
+
+    if (activeGuest && activeGuest.length > 0) {
+      return res.status(409).json({ error: "Nickname already active in queue. Please choose another." });
+    }
+
     const payload = {
       sub: guestId,
       role: "guest",
