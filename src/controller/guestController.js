@@ -35,7 +35,21 @@ exports.join_as_guest = async (req, res) => {
             });
         }
     }
+
     // --- END DEVICE BLOCKING CHECK ---
+
+    // Check for active duplicate nickname FOR THIS BARBER
+    const { data: activeNickname } = await supabase
+      .from('queue_entries')
+      .select('id')
+      .eq('customer_name', name)
+      .eq('barber_id', parseInt(barberId))
+      .in('status', ['Waiting', 'Up Next', 'In Progress'])
+      .limit(1);
+
+    if (activeNickname && activeNickname.length > 0) {
+      return res.status(409).json({ error: `Nickname "${name}" already active in ${barberId}'s queue. Please choose a different nickname.` });
+    }
 
     try {
         // Check if the provided guestId is already active. If so, treat as new guest (null ID)
@@ -57,6 +71,7 @@ exports.join_as_guest = async (req, res) => {
                 finalGuestId = guestId;
             }
         }
+
 
         // Helper function to validate UUID
         function isValidUUID(uuid) {

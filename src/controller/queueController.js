@@ -74,7 +74,7 @@ exports.queue = async (req, res) => {
         return res.status(400).json({ error: 'Name, Barber ID, and Service ID are required.' });
     }
 
-    // --- 1. BLOCKING CHECK: Active Booking ---
+    // --- 1. BLOCKING CHECK: Active Booking (user_id) ---
     if (user_id) {
         const { data: activeEntry, error: checkError } = await supabase
             .from('queue_entries')
@@ -85,6 +85,23 @@ exports.queue = async (req, res) => {
 
         if (checkError) return res.status(500).json({ error: 'Server error checking queue status.' });
         if (activeEntry) return res.status(409).json({ error: 'You already have an active booking.', details: activeEntry });
+    }
+
+    // --- 2. DUPLICATE NAME CHECK: Per barber ---
+    const { data: duplicateName, error: dupError } = await supabase
+        .from('queue_entries')
+        .select('id')
+        .eq('customer_name', customer_name)
+        .eq('barber_id', barberIdInt)
+        .in('status', ['Waiting', 'Up Next', 'In Progress'])
+        .limit(1);
+
+    if (dupError) {
+        console.error('Duplicate name check error:', dupError);
+    } else if (duplicateName && duplicateName.length > 0) {
+        return res.status(409).json({ 
+            error: `Name "${customer_name}" already in ${barberIdInt}'s active queue. Please use a different name.` 
+        });
     }
 
     try {
