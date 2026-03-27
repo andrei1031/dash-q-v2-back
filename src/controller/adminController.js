@@ -238,27 +238,21 @@ exports.hard_delete_admin_service = async (req, res) => {
             return res.status(500).json({ error: 'Failed to verify service existence: ' + serviceCheckError.message });
         }
         if (!serviceCheck?.data) {
-            console.log('Service not found:', serviceId);
-            console.log('Frontend request details:', {
-                body: req.body,
-                headers: {
-                    'user-agent': req.headers['user-agent'],
-                    'referer': req.headers.referer
-                }
-            });
+            console.log(`🚫 SERVICE NOT FOUND: ID ${serviceId}`);
             return res.status(404).json({ 
-                error: `Service ID ${serviceId} was already permanently deleted or never existed. Check the admin services list (/api/admin/services).`,
+                error: `Service ID ${serviceId} not found in database.`,
                 serviceId 
             });
         } else if (!serviceCheck.data.is_active) {
-            console.log('Service is soft-deleted:', serviceCheck.data.name);
+            console.log(`🚫 SERVICE ARCHIVED: "${serviceCheck.data.name}" (ID ${serviceId})`);
             return res.status(409).json({ 
-                error: `Service "${serviceCheck.data.name}" is archived (soft-deleted). Restore first using PUT /api/admin/services/${serviceId}/restore, then hard-delete.`,
+                error: `Service "${serviceCheck.data.name}" is archived. Restore first (/api/admin/services/${serviceId}/restore).`,
                 serviceId,
                 name: serviceCheck.data.name
             });
         }
-        console.log('✓ Service found:', serviceCheck.data.name || serviceId, '(active:', serviceCheck.data.is_active, ')');
+        console.log(`✓ ACTIVE SERVICE: "${serviceCheck.data.name}" (ID ${serviceId})`);
+
 
 
         // Safe count helpers
@@ -289,14 +283,17 @@ exports.hard_delete_admin_service = async (req, res) => {
 
 
         const totalRefs = queueCount + completedCount;
-        console.log(`Total references: queue_entries=${queueCount}, services_completed=${completedCount} (skipped), total=${totalRefs}`);
+        console.log(`🔍 REFERENCES: queue_entries=${queueCount}, total=${totalRefs}`);
 
         if (totalRefs > 0) {
+            console.log(`🚫 BLOCKED BY REFS: ${queueCount} queue_entries`);
             return res.status(409).json({ 
-                error: `Cannot permanently delete: Service used in ${queueCount} queue entries${completedCount > 0 ? ` and ${completedCount} completions` : ''}. Archive instead?`,
-                details: { queue_entries: queueCount, services_completed: completedCount }
+                error: `Cannot hard-delete: ${queueCount} queue entries use this service. Archive (soft-delete) instead.`,
+                details: { queue_entries: queueCount }
             });
         }
+        console.log('✅ NO REFERENCES - SAFE TO DELETE');
+
 
         // Safe to delete - FINAL STEP
         console.log('No references found - executing PERMANENT DELETE...');
@@ -316,18 +313,28 @@ exports.hard_delete_admin_service = async (req, res) => {
             service_id: serviceId 
         });
     } catch (error) {
-        console.error("=== FULL HARD DELETE ERROR ===", error);
-        console.error('Error details:', {
-            message: error.message,
-            stack: error.stack,
-            serviceId,
-            id: req.params.id
-        });
-        res.status(500).json({ 
-            error: 'Hard delete failed: ' + error.message,
+        console.error("💥 HARD DELETE FAILED for service", serviceId || req.params.id, ":", error.message);
+        console.error('Full error:', error);
+        
+        // Better error classification
+        let status = 500;
+        let userError = 'Hard delete operation failed';
+        
+        if (error.message.includes('not found') || error.message.includes('does not exist')) {
+            status = 404;
+            userError = `Service ID ${serviceId || req.params.id} not found in database.`;
+        } else if (error.message.includes('queue_entries') || error.message.includes('foreign key')) {
+            status = 409;
+            userError = 'Cannot delete: Service referenced in queue/appointments. Archive instead.';
+        }
+        
+        res.status(status).json({ 
+            error: userError,
+            serviceId: serviceId || req.params.id,
             debug: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
     }
+
 }
 
 
