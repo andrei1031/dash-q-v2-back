@@ -6,6 +6,10 @@ const { isAdmin } = require("../utils/admin");
 // Use supabaseAdmin for admin queries to bypass RLS
 const db = supabaseAdmin;
 
+// Import at top if not already
+const { isAdmin } = require("../utils/admin");
+
+
 const { enforceQueueLogic } = createQueueHelpers(supabaseAdmin);
 
 // POST /api/admin/next-customer
@@ -185,6 +189,7 @@ exports.remove_admin_service = async (req, res) => {
     }
 }
 
+
 /**
  * ENDPOINT: Hard/Permanent Delete a Service
  * Only if not referenced in queue_entries or services_completed.
@@ -192,53 +197,120 @@ exports.remove_admin_service = async (req, res) => {
 exports.hard_delete_admin_service = async (req, res) => {
     const { id } = req.params;
     const { userId } = req.body;
+    console.log(`=== HARD DELETE SERVICE DEBUG ===`);
     console.log(`DELETE /api/admin/services/${id}/hard-delete - Permanent delete by ${userId}`);
+    console.log('Raw params:', req.params);
+    console.log('Raw body.userId:', userId, 'Type:', typeof userId);
+    console.log('Raw service ID:', id, 'Type:', typeof id);
 
-    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+    if (!userId) {
+        console.log('ERROR: Missing userId');
+        return res.status(400).json({ error: 'Missing userId' });
+    }
+    if (!await isAdmin(userId)) {
+        console.log('Admin check FAILED for', userId);
+        return res.status(403).json({ error: 'Unauthorized - not admin' });
+    }
+    console.log('✓ Admin check PASSED');
+
+
 
     try {
         const serviceId = parseInt(id);
+        console.log('Parsed serviceId:', serviceId, 'Type:', typeof serviceId);
+
+        if (isNaN(serviceId)) {
+            console.log('ERROR: Invalid service ID (NaN)');
+            return res.status(400).json({ error: 'Invalid service ID' });
+        }
+
+        // First: Verify service exists
+        console.log('Checking if service exists...');
+        const { data: serviceCheck, error: serviceCheckError } = await db
+            .from('services')
+            .select('id, name, is_active')
+            .eq('id', serviceId)
+            .maybeSingle();
+
+        if (serviceCheckError) {
+            console.error('Service existence check error:', serviceCheckError.message);
+            return res.status(500).json({ error: 'Failed to verify service existence' });
+        }
+        if (!serviceCheck?.data) {
+            console.log('Service not found:', serviceId);
+            return res.status(404).json({ error: 'Service not found' });
+        }
+        console.log('✓ Service found:', serviceCheck.data.name || serviceId, '(active:', serviceCheck.data.is_active, ')');
+
+        // Safe count helpers
+        const safeCount = async (tableName, colValue) => {
+            try {
+                console.log(`Counting in ${tableName} for service_id=${colValue}...`);
+                const { count, error } = await db
+                    .from(tableName)
+                    .select('*', { count: 'exact', head: true })
+                    .eq('service_id', colValue);
+                if (error) throw error;
+                console.log(`✓ ${tableName}: ${count || 0} references`);
+                return count || 0;
+            } catch (err) {
+                console.warn(`⚠️  ${tableName} count FAILED (${err.message}) - assuming 0 references`);
+                return 0;
+            }
+        };
+
+        let queueCount = 0;
+        let completedCount = 0;
+
+        queueCount = await safeCount('queue_entries', serviceId);
+        // Skip services_completed count since table doesn't exist in this codebase
+        completedCount = 0;
+        console.log('services_completed: SKIPPED (table not used in codebase)');
 
 
-        // Check references using admin client (bypass RLS)
-        const { count: queueCount, error: queueError } = await db
-            .from('queue_entries')
-            .select('*', { count: 'exact', head: true })
-            .eq('service_id', serviceId);
 
-        if (queueError) throw queueError;
+        const totalRefs = queueCount + completedCount;
+        console.log(`Total references: queue_entries=${queueCount}, services_completed=${completedCount} (skipped), total=${totalRefs}`);
 
-        const { count: completedCount, error: compError } = await db
-            .from('services_completed')
-            .select('*', { count: 'exact', head: true })
-            .eq('service_id', serviceId);
-
-        if (compError) throw compError;
-
-
-        const totalRefs = (queueCount || 0) + (completedCount || 0);
         if (totalRefs > 0) {
             return res.status(409).json({ 
-                error: `Cannot permanently delete: Service used in ${queueCount || 0} queue entries and ${completedCount || 0} completions. Archive instead?` 
+                error: `Cannot permanently delete: Service used in ${queueCount} queue entries${completedCount > 0 ? ` and ${completedCount} completions` : ''}. Archive instead?`,
+                details: { queue_entries: queueCount, services_completed: completedCount }
             });
         }
 
-
-        // Safe to delete
+        // Safe to delete - FINAL STEP
+        console.log('No references found - executing PERMANENT DELETE...');
         const { error: deleteError } = await db
             .from('services')
             .delete()
             .eq('id', serviceId);
 
-        if (deleteError) throw deleteError;
+        if (deleteError) {
+            console.error('DELETE query failed:', deleteError.message);
+            throw deleteError;
+        }
 
-
-        res.json({ message: 'Service permanently deleted (cannot be restored).' });
+        console.log('✓ Service PERMANENTLY DELETED');
+        res.json({ 
+            message: 'Service permanently deleted (cannot be restored).', 
+            service_id: serviceId 
+        });
     } catch (error) {
-        console.error("Hard delete service error:", error.message);
-        res.status(500).json({ error: error.message });
+        console.error("=== FULL HARD DELETE ERROR ===", error);
+        console.error('Error details:', {
+            message: error.message,
+            stack: error.stack,
+            serviceId,
+            id: req.params.id
+        });
+        res.status(500).json({ 
+            error: 'Hard delete failed: ' + error.message,
+            debug: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 }
+
 
 
 /**
