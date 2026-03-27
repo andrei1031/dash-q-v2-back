@@ -233,13 +233,14 @@ exports.hard_delete_admin_service = async (req, res) => {
 
         if (serviceCheckError) {
             console.error('Service existence check error:', serviceCheckError.message);
-            return res.status(500).json({ error: 'Failed to verify service existence' });
+            return res.status(500).json({ error: 'Failed to verify service existence: ' + serviceCheckError.message });
         }
         if (!serviceCheck?.data) {
             console.log('Service not found:', serviceId);
-            return res.status(404).json({ error: 'Service not found' });
+            return res.status(404).json({ error: `Service ID ${serviceId} not found in database` });
         }
         console.log('✓ Service found:', serviceCheck.data.name || serviceId, '(active:', serviceCheck.data.is_active, ')');
+
 
         // Safe count helpers
         const safeCount = async (tableName, colValue) => {
