@@ -163,8 +163,8 @@ exports.restore_admin_service = async (req, res) => {
 }
 
 /**
- * ENDPOINT: Soft Delete a Service (Archive)
- * Prevents database crashes by hiding the service instead of deleting history.
+ * ENDPOINT: Archive Service (Soft Delete)
+ * Hides service from menu but keeps history.
  */
 exports.remove_admin_service = async (req, res) => {
     const { id } = req.params;
@@ -183,10 +183,11 @@ exports.remove_admin_service = async (req, res) => {
         if (error) throw error;
         res.json({ message: 'Service archived successfully.' });
     } catch (error) {
-        console.error("Admin delete service error:", error.message);
+        console.error("Admin archive service error:", error.message);
         res.status(500).json({ error: error.message });
     }
 }
+
 
 
 /**
