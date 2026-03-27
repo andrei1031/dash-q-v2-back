@@ -225,9 +225,9 @@ exports.hard_delete_admin_service = async (req, res) => {
             return res.status(400).json({ error: 'Invalid service ID' });
         }
 
-        // First: Verify service exists
+        // First: Verify service exists - USE supabase like all_services
         console.log('Checking if service exists...');
-        const { data: serviceCheck, error: serviceCheckError } = await db
+        const { data: serviceCheck, error: serviceCheckError } = await supabase
             .from('services')
             .select('id, name, is_active')
             .eq('id', serviceId)
@@ -243,15 +243,8 @@ exports.hard_delete_admin_service = async (req, res) => {
                 error: `Service ID ${serviceId} not found in database.`,
                 serviceId 
             });
-        } else if (!serviceCheck.data.is_active) {
-            console.log(`🚫 SERVICE ARCHIVED: "${serviceCheck.data.name}" (ID ${serviceId})`);
-            return res.status(409).json({ 
-                error: `Service "${serviceCheck.data.name}" is archived. Restore first (/api/admin/services/${serviceId}/restore).`,
-                serviceId,
-                name: serviceCheck.data.name
-            });
         }
-        console.log(`✓ ACTIVE SERVICE: "${serviceCheck.data.name}" (ID ${serviceId})`);
+        console.log(`✓ SERVICE FOUND: "${serviceCheck.data.name}" (active: ${serviceCheck.data.is_active}) ID ${serviceId}`);
 
 
 
@@ -280,8 +273,6 @@ exports.hard_delete_admin_service = async (req, res) => {
         completedCount = 0;
         console.log('services_completed: SKIPPED (table not used in codebase)');
 
-
-
         const totalRefs = queueCount + completedCount;
         console.log(`🔍 REFERENCES: queue_entries=${queueCount}, total=${totalRefs}`);
 
@@ -294,10 +285,9 @@ exports.hard_delete_admin_service = async (req, res) => {
         }
         console.log('✅ NO REFERENCES - SAFE TO DELETE');
 
-
-        // Safe to delete - FINAL STEP
+        // Safe to delete - FINAL STEP - USE supabase
         console.log('No references found - executing PERMANENT DELETE...');
-        const { error: deleteError } = await db
+        const { error: deleteError } = await supabase
             .from('services')
             .delete()
             .eq('id', serviceId);
