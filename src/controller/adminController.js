@@ -199,20 +199,22 @@ exports.hard_delete_admin_service = async (req, res) => {
     try {
         const serviceId = parseInt(id);
 
-        // Check references
-        const { count: queueCount, error: queueError } = await supabase
+
+        // Check references using admin client (bypass RLS)
+        const { count: queueCount, error: queueError } = await db
             .from('queue_entries')
             .select('*', { count: 'exact', head: true })
             .eq('service_id', serviceId);
 
         if (queueError) throw queueError;
 
-        const { count: completedCount, error: compError } = await supabase
+        const { count: completedCount, error: compError } = await db
             .from('services_completed')
             .select('*', { count: 'exact', head: true })
             .eq('service_id', serviceId);
 
         if (compError) throw compError;
+
 
         const totalRefs = (queueCount || 0) + (completedCount || 0);
         if (totalRefs > 0) {
@@ -221,13 +223,15 @@ exports.hard_delete_admin_service = async (req, res) => {
             });
         }
 
+
         // Safe to delete
-        const { error: deleteError } = await supabase
+        const { error: deleteError } = await db
             .from('services')
             .delete()
             .eq('id', serviceId);
 
         if (deleteError) throw deleteError;
+
 
         res.json({ message: 'Service permanently deleted (cannot be restored).' });
     } catch (error) {
