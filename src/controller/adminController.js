@@ -6,8 +6,7 @@ const { isAdmin } = require("../utils/admin");
 // Use supabaseAdmin for admin queries to bypass RLS
 const db = supabaseAdmin;
 
-// Import at top if not already
-const { isAdmin } = require("../utils/admin");
+
 
 
 const { enforceQueueLogic } = createQueueHelpers(supabaseAdmin);
