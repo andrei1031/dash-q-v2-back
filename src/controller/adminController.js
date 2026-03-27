@@ -186,6 +186,58 @@ exports.remove_admin_service = async (req, res) => {
 }
 
 /**
+ * ENDPOINT: Hard/Permanent Delete a Service
+ * Only if not referenced in queue_entries or services_completed.
+ */
+exports.hard_delete_admin_service = async (req, res) => {
+    const { id } = req.params;
+    const { userId } = req.body;
+    console.log(`DELETE /api/admin/services/${id}/hard-delete - Permanent delete by ${userId}`);
+
+    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    try {
+        const serviceId = parseInt(id);
+
+        // Check references
+        const { count: queueCount, error: queueError } = await supabase
+            .from('queue_entries')
+            .select('*', { count: 'exact', head: true })
+            .eq('service_id', serviceId);
+
+        if (queueError) throw queueError;
+
+        const { count: completedCount, error: compError } = await supabase
+            .from('services_completed')
+            .select('*', { count: 'exact', head: true })
+            .eq('service_id', serviceId);
+
+        if (compError) throw compError;
+
+        const totalRefs = (queueCount || 0) + (completedCount || 0);
+        if (totalRefs > 0) {
+            return res.status(409).json({ 
+                error: `Cannot permanently delete: Service used in ${queueCount || 0} queue entries and ${completedCount || 0} completions. Archive instead?` 
+            });
+        }
+
+        // Safe to delete
+        const { error: deleteError } = await supabase
+            .from('services')
+            .delete()
+            .eq('id', serviceId);
+
+        if (deleteError) throw deleteError;
+
+        res.json({ message: 'Service permanently deleted (cannot be restored).' });
+    } catch (error) {
+        console.error("Hard delete service error:", error.message);
+        res.status(500).json({ error: error.message });
+    }
+}
+
+
+/**
  * ENDPOINT: Get Shop-Wide Analytics
  */
 exports.get_admin_stats = async (req, res) => {

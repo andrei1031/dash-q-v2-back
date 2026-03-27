@@ -17,7 +17,8 @@ const {
     get_analytics_with_filter,
     get_customers_database,
     export_analytics_csv,
-    recalculate_loyalty
+    recalculate_loyalty,
+    hard_delete_admin_service
 
 } = require('../controller/adminController');
 
@@ -33,6 +34,7 @@ router.put('/services/:id', update_admin_service);
 router.get('/services', all_services);
 router.put('/services/:id/restore', restore_admin_service);
 router.delete('/services/:id', remove_admin_service);
+router.delete('/services/:id/hard-delete', hard_delete_admin_service);
 router.get('/stats', get_admin_stats);
 router.put('/transfer', queue_transfer);
 router.get('/analytics/advanced', get_admin_analytics);
