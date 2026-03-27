@@ -3,6 +3,7 @@ const { supabase } = require("../database/supabase");
 async function isAdmin(userId) {
     if (!userId) return false;
 
+
     const { data, error } = await supabase
         .from('profiles')
         .select('role')
@@ -10,11 +11,12 @@ async function isAdmin(userId) {
         .single();
 
     if (error) {
-        console.error(error);
+        console.error('isAdmin check error:', error);
         return false;
     }
 
     return data?.role === 'admin';
+
 }
 
 module.exports = {
