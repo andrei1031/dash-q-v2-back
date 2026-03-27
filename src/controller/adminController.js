@@ -198,9 +198,11 @@ exports.hard_delete_admin_service = async (req, res) => {
     const { userId } = req.body;
     console.log(`=== HARD DELETE SERVICE DEBUG ===`);
     console.log(`DELETE /api/admin/services/${id}/hard-delete - Permanent delete by ${userId}`);
-    console.log('Raw params:', req.params);
-    console.log('Raw body.userId:', userId, 'Type:', typeof userId);
-    console.log('Raw service ID:', id, 'Type:', typeof id);
+    console.log('Full request:', {
+        params: req.params,
+        body: req.body,
+        headers: req.headers
+    });
 
     if (!userId) {
         console.log('ERROR: Missing userId');
@@ -237,7 +239,24 @@ exports.hard_delete_admin_service = async (req, res) => {
         }
         if (!serviceCheck?.data) {
             console.log('Service not found:', serviceId);
-            return res.status(404).json({ error: `Service ID ${serviceId} not found in database` });
+            console.log('Frontend request details:', {
+                body: req.body,
+                headers: {
+                    'user-agent': req.headers['user-agent'],
+                    'referer': req.headers.referer
+                }
+            });
+            return res.status(404).json({ 
+                error: `Service ID ${serviceId} was already permanently deleted or never existed. Check the admin services list (/api/admin/services).`,
+                serviceId 
+            });
+        } else if (!serviceCheck.data.is_active) {
+            console.log('Service is soft-deleted:', serviceCheck.data.name);
+            return res.status(409).json({ 
+                error: `Service "${serviceCheck.data.name}" is archived (soft-deleted). Restore first using PUT /api/admin/services/${serviceId}/restore, then hard-delete.`,
+                serviceId,
+                name: serviceCheck.data.name
+            });
         }
         console.log('✓ Service found:', serviceCheck.data.name || serviceId, '(active:', serviceCheck.data.is_active, ')');
 
