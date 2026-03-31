@@ -32,6 +32,9 @@ console.log("🔐 Barber config loaded:", {
 
 startCronJobs()
 
+// Auth middleware
+const { auth, adminAuth } = require('./middleware/auth');
+
 // API ENDPOINTS START
 const home = require('./routes/homeRoutes');
 app.use('/api', home);
@@ -102,35 +105,40 @@ app.use('/api', login);
 const guest_login = require('./routes/authRoutes');
 app.use('/api', guest_login);
 
-const queue = require('./routes/queueRoutes');
-app.use('/api', queue);
+// Protected queue routes
+const queueRoutes = require('./routes/queueRoutes');
+app.use('/api/queue', auth, queueRoutes);
 
-const push = require('./routes/notificationRoutes');
-app.use('/api/test', push);
+const settings = require('./routes/settingsRoutes');
+app.use('/api/settings', adminAuth, settings);
 
-const photo = require('./routes/queueRoutes');
-app.use('/api/queue', photo);
+const chatRoutes = require('./routes/chatRoutes');
+app.use('/api/chat', auth, chatRoutes);
 
-const details = require('./routes/queueRoutes');
-app.use('/api/queue', details);
+const appointmentRoutes = require('./routes/appointmentRoutes');
+app.use('/api/appointments', auth, appointmentRoutes);
 
-const next = require('./routes/queueRoutes');
-app.use('/api/queue', next);
+const customerRoutes = require('./routes/customerRoutes');
+app.use('/api/customer', auth, customerRoutes);
 
-const cancel = require('./routes/queueRoutes');
-app.use('/api/queue', cancel);
+const loyaltyRoutes = require('./routes/loyaltyRoutes');
+app.use('/api/loyalty', auth, loyaltyRoutes);
 
-const complete = require('./routes/queueRoutes');
-app.use('/api/queue', complete);
+// Public routes remain unchanged
+const home = require('./routes/homeRoutes');
+app.use('/api', home);
 
-const analytics_barber = require('./routes/analyticsRoutes');
-app.use('/api', analytics_barber);
+const services = require('./routes/serviceRoutes');
+app.use('/api/services', services);
 
-const public_barber = require('./routes/queueRoutes');
-app.use('/api/queue', public_barber);
+const barbersPublic = require('./routes/barberRoutes');
+app.use('/api/barbers', barbersPublic);
 
-const remove = require('./routes/queueRoutes');
-app.use('/api', remove);
+const publicQueue = require('./routes/queueRoutes');
+app.use('/api/queue/public', publicQueue);
+
+const feedbackPublic = require('./routes/customerRoutes');
+app.use('/api/feedback', feedbackPublic);
 
 const get_customer_appointments = require('./routes/appointmentRoutes');
 app.use('/api/appointments', get_customer_appointments);
