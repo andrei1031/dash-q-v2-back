@@ -1,6 +1,15 @@
 const axios = require("axios");
 const { supabase, supabaseAdmin } = require("../database/supabase");
 
+// Helper to force UTC timezone if the database stripped it
+const fixTimezone = (dateString) => {
+    if (!dateString) return dateString;
+    if (!dateString.includes('Z') && !dateString.includes('+')) {
+        return dateString + 'Z';
+    }
+    return dateString;
+};
+
 /**
  * ENDPOINT: Timezone-Aware Smart Slots
  * - Forces "Philippines Time" (UTC+8) regardless of server location.
@@ -237,7 +246,7 @@ exports.book = async (req, res) => {
                     await axios.post(process.env.N8N_WEBHOOK_URL, {
                         type: 'barber_alert', // <--- NEW TYPE
                         email: barberEmail, // Send to Barber
-                        subject: '📅 New Booking Received!',
+                        subject: '✂️ New Booking Received!',
                         message: `You have a new appointment with ${customer_name} on ${new Date(startDate).toLocaleString('en-US', { timeZone: 'Asia/Manila' })}.`
                     });
                     console.log(`[Notify] Alert sent to barber at ${barberEmail}`);
@@ -357,7 +366,14 @@ exports.get_customer_appointments = async (req, res) => {
             .order('scheduled_time', { ascending: false }); // Show upcoming first
 
         if (error) throw error;
-        res.json(data || []);
+        
+        // --- APPLIED FIX ---
+        const fixedData = data?.map(appt => ({
+            ...appt,
+            scheduled_time: fixTimezone(appt.scheduled_time)
+        }));
+
+        res.json(fixedData || []);
     } catch (error) {
         console.error("Fetch appointments error:", error.message);
         res.status(500).json({ error: 'Failed to fetch appointments.' });
@@ -383,14 +399,19 @@ exports.get_all_appointments = async (req, res) => {
                 barber_profiles(full_name),
                 services(name, duration_minutes)
             `)
-            // 🔴 OLD: .eq('status', 'confirmed') 
-            // 🟢 NEW: Allow Pending too!
             .in('status', ['confirmed', 'pending']) 
             .gte('scheduled_time', now.toISOString()) 
             .order('scheduled_time', { ascending: true });
 
         if (error) throw error;
-        res.json(data || []);
+        
+        // --- APPLIED FIX ---
+        const fixedData = data?.map(appt => ({
+            ...appt,
+            scheduled_time: fixTimezone(appt.scheduled_time)
+        }));
+
+        res.json(fixedData || []);
     } catch (error) {
         console.error("Admin Appointments Error:", error.message);
         res.status(500).json({ error: 'Failed to fetch appointments.' });
@@ -422,14 +443,19 @@ exports.get_barber_appointments = async (req, res) => {
                 services(name, duration_minutes)
             `)
             .eq('barber_id', barberId)
-            // 🔴 OLD CODE: .eq('status', 'confirmed') 
-            // 🟢 NEW CODE: Fetch BOTH confirmed and pending
             .in('status', ['confirmed', 'pending']) 
             .gte('scheduled_time', now.toISOString()) 
             .order('scheduled_time', { ascending: true }); 
 
         if (error) throw error;
-        res.json(data || []);
+        
+        // --- APPLIED FIX ---
+        const fixedData = data?.map(appt => ({
+            ...appt,
+            scheduled_time: fixTimezone(appt.scheduled_time)
+        }));
+
+        res.json(fixedData || []);
     } catch (error) {
         console.error("Fetch barber appointments error:", error.message);
         res.status(500).json({ error: 'Failed to fetch appointments.' });
