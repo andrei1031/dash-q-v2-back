@@ -58,7 +58,7 @@ exports.next_customer = async (req, res) => {
  * ENDPOINT: Add a New Service (With Validation)
  */
 exports.add_admin_services = async (req, res) => {
-    const { userId, name, duration_minutes, price_php, price_vip_php } = req.body;
+    const { userId, name, duration_minutes, price_php } = req.body;
 
     if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
 
@@ -66,14 +66,12 @@ exports.add_admin_services = async (req, res) => {
     if (!name || name.trim() === "") return res.status(400).json({ error: 'Service name is required.' });
     if (duration_minutes < 5) return res.status(400).json({ error: 'Duration must be at least 5 minutes.' });
     if (price_php < 0) return res.status(400).json({ error: 'Price cannot be negative.' });
-    if (price_vip_php !== undefined && price_vip_php < 0) return res.status(400).json({ error: 'VIP Price cannot be negative.' });
 
     try {
         const { data, error } = await supabase.from('services').insert({
             name,
             duration_minutes: parseInt(duration_minutes),
             price_php: parseFloat(price_php),
-            price_vip_php: (price_vip_php !== undefined && price_vip_php !== "") ? parseFloat(price_vip_php) : null,
             is_active: true
         }).select().single();
 
@@ -90,7 +88,7 @@ exports.add_admin_services = async (req, res) => {
  */
 exports.update_admin_service = async (req, res) => {
     const { id } = req.params;
-    const { userId, name, duration_minutes, price_php, price_vip_php } = req.body;
+    const { userId, name, duration_minutes, price_php } = req.body;
 
     // Check Admin rights (assuming isAdmin function exists or you skip it for dev)
     // if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
@@ -99,15 +97,13 @@ exports.update_admin_service = async (req, res) => {
     if (!name || name.trim() === "") return res.status(400).json({ error: 'Service name is required.' });
     if (duration_minutes < 5) return res.status(400).json({ error: 'Duration must be at least 5 minutes.' });
     if (price_php < 0) return res.status(400).json({ error: 'Price cannot be negative.' });
-    if (price_vip_php !== undefined && price_vip_php < 0) return res.status(400).json({ error: 'VIP Price cannot be negative.' });
 
     try {
         const { data, error } = await supabase.from('services')
             .update({ 
                 name, 
                 duration_minutes, 
-                price_php,
-                price_vip_php: (price_vip_php !== undefined && price_vip_php !== "") ? parseFloat(price_vip_php) : null
+                price_php
             })
             .eq('id', id)
             .select(); // <--- REMOVED .single() to prevent crash
@@ -975,7 +971,7 @@ exports.recalculate_loyalty = async (req, res) => {
                 // Get all "Done" queue entries for this customer
                 const { data: completedEntries, error: entriesError } = await db
                     .from('queue_entries')
-                    .select('id, head_count, is_vip, tip_amount, services(price_php, price_vip_php)')
+                    .select('id, head_count, tip_amount, services(price_php)')
                     .eq('user_id', customer.id)
                     .eq('status', 'Done');
 
@@ -1004,15 +1000,12 @@ exports.recalculate_loyalty = async (req, res) => {
 
                 for (const entry of completedEntries) {
                     const headCount = entry.head_count || 1;
-                    const isVip = entry.is_vip || false;
                     const tip = parseFloat(entry.tip_amount) || 0;
                     
-                    // Get service prices
-                    const basePrice = parseFloat(entry.services?.price_php) || 0;
-                    const vipPrice = parseFloat(entry.services?.price_vip_php) || basePrice;
+                    // Get service price
+                    const servicePrice = parseFloat(entry.services?.price_php) || 0;
                     
                     // Calculate this entry's total
-                    const servicePrice = isVip ? vipPrice : basePrice;
                     const entryTotal = (servicePrice * headCount) + tip;
                     
                     totalSpent += entryTotal;
