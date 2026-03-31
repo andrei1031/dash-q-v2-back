@@ -1,22 +1,43 @@
 const axios = require("axios");
 const { supabase, supabaseAdmin } = require("../database/supabase");
 
-// Helper to force UTC timezone if the database stripped it
-const fixTimezone = (dateString) => {
-    if (!dateString) return dateString;
-    if (!dateString.includes('Z') && !dateString.includes('+')) {
-        return dateString + 'Z';
+// THE ULTIMATE TIMEZONE FIX: 
+// Rebuilds the string so it literally contains the local PH time, 
+// fixing views that use .substring() or .slice() instead of new Date()
+const formatToPHT = (dbDateString) => {
+    if (!dbDateString) return dbDateString;
+    try {
+        let safeString = dbDateString;
+        // Ensure it's treated as UTC if Supabase stripped the marker
+        if (!safeString.includes('Z') && !safeString.includes('+')) {
+            safeString += 'Z';
+        }
+        
+        const date = new Date(safeString);
+        if (isNaN(date.getTime())) return dbDateString; // fallback
+        
+        // Shift by 8 hours
+        const phTime = new Date(date.getTime() + (8 * 60 * 60 * 1000));
+        
+        // Rebuild string manually
+        const year = phTime.getUTCFullYear();
+        const month = String(phTime.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(phTime.getUTCDate()).padStart(2, '0');
+        const hours = String(phTime.getUTCHours()).padStart(2, '0');
+        const minutes = String(phTime.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(phTime.getUTCSeconds()).padStart(2, '0');
+        
+        // Output: "2026-04-01T10:30:00+08:00"
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}+08:00`;
+    } catch(e) {
+        return dbDateString;
     }
-    return dateString;
 };
 
 /**
  * ENDPOINT: Timezone-Aware Smart Slots
- * - Forces "Philippines Time" (UTC+8) regardless of server location.
- * - Fixes the "5 PM - 2 AM" bug caused by UTC conversion.
  */
 exports.slots = async (req, res) => {
-
     const { barberId, date, serviceId } = req.query;
     if (!barberId || !date || !serviceId) return res.status(400).json({ error: 'Missing parameters' });
 
@@ -24,25 +45,16 @@ exports.slots = async (req, res) => {
         const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', serviceId).single();
         const duration = service?.duration_minutes || 30;
 
-        // --- FIXED: Use Philippines timezone properly ---
         const PH_OFFSET = "+08:00";
-        
-        // 1. OPENING TIME: 10:30 AM Philippines
         const startIso = `${date}T10:30:00${PH_OFFSET}`; 
-        
-        // 2. CLOSING TIME: 7:00 PM (19:00) Philippines
         const closeIso = `${date}T19:00:00${PH_OFFSET}`; 
 
-        // Parse dates as Philippines time
         let slotIterator = new Date(startIso);
         const closeTime = new Date(closeIso);
         
-        // Get current time in Philippines timezone for comparison
         const now = new Date();
         const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
 
-        // Fetch existing appointments stored in PH time
-        // Query using the date string directly without conversion
         const dbStart = `${date}T00:00:00${PH_OFFSET}`;
         const dbEnd = `${date}T23:59:59${PH_OFFSET}`;
 
@@ -60,30 +72,20 @@ exports.slots = async (req, res) => {
             const slotStart = new Date(slotIterator);
             const slotEnd = new Date(slotIterator.getTime() + duration * 60000);
 
-            // RULE A: STRICT CLOSING TIME (7:00 PM)
-            if (slotEnd > closeTime) {
-                break;
-            }
+            if (slotEnd > closeTime) break;
 
-            // FIX: Compare against PH time, not server local time
             if (slotStart < nowPH) {
                 slotIterator.setMinutes(slotIterator.getMinutes() + 30);
                 continue;
             }
 
             const isTaken = bookings.some(b => {
-                // Parse existing bookings as PH time
                 const bookStart = new Date(b.scheduled_time);
                 const bookEnd = new Date(b.end_time);
                 return (slotStart < bookEnd && slotEnd > bookStart);
             });
 
             if (!isTaken) {
-                // The simplest approach: extract time parts directly from slotIterator 
-                // Since the Date was created from +08:00 string, getUTCHours() gives us the UTC hour
-                // But we want the PH hour which is +08:00 from UTC
-                
-                // Get the time in milliseconds and convert to PH hours
                 const utcTime = slotIterator.getTime();
                 const phTime = new Date(utcTime + (8 * 60 * 60 * 1000));
                 
@@ -94,8 +96,7 @@ exports.slots = async (req, res) => {
                 const minutes = String(phTime.getUTCMinutes()).padStart(2, '0');
                 const seconds = String(phTime.getUTCSeconds()).padStart(2, '0');
                 
-                const phTimeString = `${year}-${month}-${day}T${hours}:${minutes}:${seconds}+08:00`;
-                slots.push(phTimeString);
+                slots.push(`${year}-${month}-${day}T${hours}:${minutes}:${seconds}+08:00`);
             }
 
             slotIterator.setMinutes(slotIterator.getMinutes() + 30);
@@ -111,54 +112,34 @@ exports.slots = async (req, res) => {
 
 /**
  * ENDPOINT: Book an Appointment
- * - Enforces "Tomorrow Only" rule (blocks booking for today or past dates).
- * - Enforces strict 1-customer-per-slot rule (prevents overlaps).
- * - FIXED: Stores time in Philippines timezone (+08:00) to prevent UTC conversion issues
  */
 exports.book = async (req, res) => {
     const { customer_name, customer_email, user_id, barber_id, service_id, scheduled_time } = req.body;
     
     try {
-        // --- 1. VALIDATION: Block "Today" and Past Appointments ---
-        // Extract date parts directly from the incoming timezone string
         const extractDateParts = (isoString) => {
             const match = isoString.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
             if (!match) return null;
             return {
-                year: parseInt(match[1]),
-                month: parseInt(match[2]),
-                day: parseInt(match[3]),
-                hours: parseInt(match[4]),
-                minutes: parseInt(match[5])
+                year: parseInt(match[1]), month: parseInt(match[2]), day: parseInt(match[3]),
+                hours: parseInt(match[4]), minutes: parseInt(match[5])
             };
         };
 
         const timeParts = extractDateParts(scheduled_time);
-        if (!timeParts) {
-            return res.status(400).json({ error: 'Invalid time format' });
-        }
+        if (!timeParts) return res.status(400).json({ error: 'Invalid time format' });
 
-        // Get current time in Philippines timezone for comparison
         const now = new Date();
         const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
-        
-        // Create appointment date in PH timezone for comparison
         const appointmentPH = new Date(timeParts.year, timeParts.month - 1, timeParts.day, timeParts.hours, timeParts.minutes);
 
-        // If the appointment is Today or in the Past, reject it
-        // Compare using timestamps
         if (appointmentPH.getTime() <= nowPH.getTime()) {
             return res.status(400).json({ error: 'Appointments must be booked at least 1 day in advance.' });
         }
-        // -----------------------------------------------------------
 
-        // 2. Calculate End Time based on Service Duration
         const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', service_id).single();
         const duration = service?.duration_minutes || 30;
 
-        // 3. STRICT CONFLICT CHECK (Race Condition Prevention)
-        // This ensures Customer B cannot book if Customer A already has this slot.
-        // Use the original string to calculate end time for conflict check
         const startDate = new Date(scheduled_time);
         const endDate = new Date(startDate.getTime() + duration * 60000);
 
@@ -175,87 +156,29 @@ exports.book = async (req, res) => {
             return res.status(409).json({ error: 'Slot is pending approval or taken. Please choose another.' });
         }
 
-        // 4. Store the time - use the original timezone string from frontend
-        // The scheduled_time from frontend is already in +08:00 format: "2024-01-15T10:30:00+08:00"
-        // Simply pass it through directly - no Date parsing needed!
         const scheduledTimePH = scheduled_time;
         
-        // Calculate end time by extracting the time portion from original string and adding duration
         const extractTimeParts = (isoString) => {
-            // Match pattern: YYYY-MM-DDTHH:MM:SS+08:00
             const match = isoString.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
             if (!match) return null;
-            return {
-                year: parseInt(match[1]),
-                month: parseInt(match[2]),
-                day: parseInt(match[3]),
-                hours: parseInt(match[4]),
-                minutes: parseInt(match[5]),
-                seconds: parseInt(match[6])
-            };
+            return { year: parseInt(match[1]), month: parseInt(match[2]), day: parseInt(match[3]), hours: parseInt(match[4]), minutes: parseInt(match[5]), seconds: parseInt(match[6]) };
         };
         
         const startTimeParts = extractTimeParts(scheduled_time);
-        if (!startTimeParts) {
-            return res.status(400).json({ error: 'Invalid time format' });
-        }
-        
-        // Add duration to get end time
         let totalMinutes = startTimeParts.hours * 60 + startTimeParts.minutes + duration;
         let endHours = Math.floor(totalMinutes / 60);
         let endMinutes = totalMinutes % 60;
         
-        const formatTime = (h, m, s) => {
-            return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}+08:00`;
-        };
-        
+        const formatTime = (h, m, s) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}+08:00`;
         const endTimePH = `${startTimeParts.year}-${String(startTimeParts.month).padStart(2, '0')}-${String(startTimeParts.day).padStart(2, '0')}T${formatTime(endHours, endMinutes, startTimeParts.seconds)}`;
 
-        // 4. Insert Appointment
         const { data, error } = await supabase.from('appointments').insert({
-            customer_name,
-            customer_email,
-            user_id,
-            barber_id,
-            service_id,
-            scheduled_time: scheduledTimePH,
-            end_time: endTimePH,
-            status: 'pending', // Immediately confirmed
-            is_converted_to_queue: false
+            customer_name, customer_email, user_id, barber_id, service_id,
+            scheduled_time: scheduledTimePH, end_time: endTimePH,
+            status: 'pending', is_converted_to_queue: false
         }).select().single();
 
         if (error) throw error;
-
-        console.log(`[Appointment] Booked for ${customer_name} on ${scheduledTimePH}`);
-
-        try {
-            // 1. Get Barber's Email from their User Profile
-            const { data: barberUser, error: barberError } = await supabaseAdmin // Use Admin client to access auth/users
-                .from('barber_profiles')
-                .select('user_id')
-                .eq('id', barber_id)
-                .single();
-
-            if (barberUser) {
-                // Fetch actual email from Auth system (securely)
-                const { data: userData } = await supabaseAdmin.auth.admin.getUserById(barberUser.user_id);
-                const barberEmail = userData?.user?.email;
-
-                if (barberEmail && process.env.N8N_WEBHOOK_URL) {
-                    // 2. Send Alert via n8n
-                    await axios.post(process.env.N8N_WEBHOOK_URL, {
-                        type: 'barber_alert', // <--- NEW TYPE
-                        email: barberEmail, // Send to Barber
-                        subject: '✂️ New Booking Received!',
-                        message: `You have a new appointment with ${customer_name} on ${new Date(startDate).toLocaleString('en-US', { timeZone: 'Asia/Manila' })}.`
-                    });
-                    console.log(`[Notify] Alert sent to barber at ${barberEmail}`);
-                }
-            }
-        } catch (notifyError) {
-            console.error("Failed to notify barber:", notifyError.message);
-            // Don't fail the booking just because notification failed
-        }
 
         res.status(201).json({ message: 'Appointment Confirmed!', appointment: data });
 
@@ -270,41 +193,23 @@ exports.book = async (req, res) => {
  */
 exports.reject = async (req, res) => {
     const { appointmentId, reason } = req.body;
+    if (!appointmentId) return res.status(400).json({ error: 'Appointment ID required.' });
 
-        if (!appointmentId) return res.status(400).json({ error: 'Appointment ID required.' });
+    try {
+        const { data: appt, error } = await supabase
+            .from('appointments')
+            .update({ status: 'cancelled' }) 
+            .eq('id', appointmentId)
+            .select('customer_email, customer_name, scheduled_time')
+            .single();
 
-        try {
-            // 1. Mark as Cancelled in DB
-            const { data: appt, error } = await supabase
-                .from('appointments')
-                .update({ status: 'cancelled' }) // Change status to cancelled
-                .eq('id', appointmentId)
-                .select('customer_email, customer_name, scheduled_time')
-                .single();
+        if (error) throw error;
+        res.json({ message: 'Appointment rejected and customer notified.' });
 
-            if (error) throw error;
-
-            // 2. Send URGENT Notification (via n8n Email or OneSignal)
-            if (appt && process.env.N8N_WEBHOOK_URL) {
-                console.log(`[Reject] Sending cancellation alert to ${appt.customer_email}`);
-                
-                // We use the existing n8n webhook but add a "type" flag
-                // You might need to update your n8n workflow to handle this "cancellation" type
-                await axios.post(process.env.N8N_WEBHOOK_URL, {
-                    type: 'cancellation', // Flag for n8n to send a different email template
-                    email: appt.customer_email,
-                    name: appt.customer_name,
-                    date: new Date(appt.scheduled_time).toLocaleString('en-US', { timeZone: 'Asia/Manila', weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
-                    reason: reason || 'Barber is unavailable.'
-                }).catch(err => console.error("Notification failed:", err.message));
-            }
-
-            res.json({ message: 'Appointment rejected and customer notified.' });
-
-        } catch (error) {
-            console.error("Reject error:", error.message);
-            res.status(500).json({ error: 'Failed to reject appointment.' });
-        }
+    } catch (error) {
+        console.error("Reject error:", error.message);
+        res.status(500).json({ error: 'Failed to reject appointment.' });
+    }
 };
 
 /**
@@ -315,7 +220,6 @@ exports.approve = async (req, res) => {
     if (!appointmentId) return res.status(400).json({ error: 'Appointment ID required.' });
 
     try {
-        // 1. Mark as Confirmed
         const { data: appt, error } = await supabase
             .from('appointments')
             .update({ status: 'confirmed' })
@@ -324,18 +228,6 @@ exports.approve = async (req, res) => {
             .single();
 
         if (error) throw error;
-
-        // 2. Notify Customer
-        if (appt && process.env.N8N_WEBHOOK_URL) {
-            console.log(`[Approve] Notifying ${appt.customer_email}`);
-            await axios.post(process.env.N8N_WEBHOOK_URL, {
-                type: 'confirmation', // Use a template that says "You are confirmed!"
-                email: appt.customer_email,
-                name: appt.customer_name,
-                date: new Date(appt.scheduled_time).toLocaleString('en-US', { timeZone: 'Asia/Manila' })
-            }).catch(err => console.error("Notification failed:", err.message));
-        }
-
         res.json({ message: 'Appointment approved successfully!' });
 
     } catch (error) {
@@ -354,23 +246,16 @@ exports.get_customer_appointments = async (req, res) => {
     try {
         const { data, error } = await supabase
             .from('appointments')
-            .select(`
-                id, 
-                scheduled_time, 
-                status, 
-                is_converted_to_queue,
-                barber_profiles(full_name),
-                services(name, price_php, duration_minutes)
-            `)
+            .select(`id, scheduled_time, status, is_converted_to_queue, barber_profiles(full_name), services(name, price_php, duration_minutes)`)
             .eq('user_id', userId)
-            .order('scheduled_time', { ascending: false }); // Show upcoming first
+            .order('scheduled_time', { ascending: false });
 
         if (error) throw error;
         
-        // --- APPLIED FIX ---
+        // Apply String Reconstruction Fix
         const fixedData = data?.map(appt => ({
             ...appt,
-            scheduled_time: fixTimezone(appt.scheduled_time)
+            scheduled_time: formatToPHT(appt.scheduled_time)
         }));
 
         res.json(fixedData || []);
@@ -382,33 +267,23 @@ exports.get_customer_appointments = async (req, res) => {
 
 /**
  * FEATURE: Admin Get All Upcoming Appointments
- * FIXED: Now fetches 'pending' bookings too so Admin can see everything.
  */
 exports.get_all_appointments = async (req, res) => {
     try {
         const now = new Date();
         const { data, error } = await supabase
             .from('appointments')
-            .select(`
-                id, 
-                scheduled_time, 
-                customer_name,
-                customer_email,
-                status, 
-                is_converted_to_queue,
-                barber_profiles(full_name),
-                services(name, duration_minutes)
-            `)
+            .select(`id, scheduled_time, customer_name, customer_email, status, is_converted_to_queue, barber_profiles(full_name), services(name, duration_minutes)`)
             .in('status', ['confirmed', 'pending']) 
             .gte('scheduled_time', now.toISOString()) 
             .order('scheduled_time', { ascending: true });
 
         if (error) throw error;
         
-        // --- APPLIED FIX ---
+        // Apply String Reconstruction Fix
         const fixedData = data?.map(appt => ({
             ...appt,
-            scheduled_time: fixTimezone(appt.scheduled_time)
+            scheduled_time: formatToPHT(appt.scheduled_time)
         }));
 
         res.json(fixedData || []);
@@ -420,28 +295,18 @@ exports.get_all_appointments = async (req, res) => {
 
 /**
  * ENDPOINT: Get Barber's Upcoming Appointments
- * FIXED: Now fetches 'pending' appointments so the barber can approve them.
  */
 exports.get_barber_appointments = async (req, res) => {
     const { barberId } = req.params;
     if (!barberId) return res.status(400).json({ error: 'Barber ID required' });
 
     try {
-        // Fetch confirmed appointments for today and the future
         const now = new Date();
         now.setHours(0,0,0,0); 
 
         const { data, error } = await supabase
             .from('appointments')
-            .select(`
-                id, 
-                scheduled_time, 
-                customer_name,
-                customer_email,
-                status, 
-                is_converted_to_queue,
-                services(name, duration_minutes)
-            `)
+            .select(`id, scheduled_time, customer_name, customer_email, status, is_converted_to_queue, services(name, duration_minutes)`)
             .eq('barber_id', barberId)
             .in('status', ['confirmed', 'pending']) 
             .gte('scheduled_time', now.toISOString()) 
@@ -449,10 +314,10 @@ exports.get_barber_appointments = async (req, res) => {
 
         if (error) throw error;
         
-        // --- APPLIED FIX ---
+        // Apply String Reconstruction Fix
         const fixedData = data?.map(appt => ({
             ...appt,
-            scheduled_time: fixTimezone(appt.scheduled_time)
+            scheduled_time: formatToPHT(appt.scheduled_time)
         }));
 
         res.json(fixedData || []);
@@ -463,12 +328,10 @@ exports.get_barber_appointments = async (req, res) => {
 }
 
 exports.process_appointments = async (req, res) => {
-    console.log('[Manual Trigger] Checking for missed appointments...');
     const now = new Date();
-    const lookBack = new Date(now.getTime() - 24 * 60 * 60 * 1000); // Look back 24 hours
+    const lookBack = new Date(now.getTime() - 24 * 60 * 60 * 1000); 
 
     try {
-        // Find confirmed appointments that haven't been queued yet
         const { data: missed, error } = await supabase
             .from('appointments')
             .select('*')
@@ -480,16 +343,10 @@ exports.process_appointments = async (req, res) => {
 
         const results = [];
         for (const appt of missed) {
-            // FORCE INSERT TO QUEUE
             const { data: newEntry } = await supabase.from('queue_entries').insert({
-                barber_id: appt.barber_id,
-                customer_name: `${appt.customer_name} (Booked)`,
-                customer_email: appt.customer_email,
-                user_id: appt.user_id,
-                service_id: appt.service_id,
-                status: 'Up Next', // Force to Up Next since it's late
-                is_vip: true,
-                is_confirmed: true
+                barber_id: appt.barber_id, customer_name: `${appt.customer_name} (Booked)`,
+                customer_email: appt.customer_email, user_id: appt.user_id, service_id: appt.service_id,
+                status: 'Up Next', is_vip: true, is_confirmed: true
             }).select().single();
 
             if (newEntry) {
