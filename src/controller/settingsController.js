@@ -69,5 +69,33 @@ exports.update_setting = async (req, res) => {
     }
 };
 
+/**
+ * ENDPOINT: Get VIP price specifically (Frontend: CustomerView, AdminAppLayout expect /settings/vip-price)
+ */
+exports.get_vip_price = async (req, res) => {
+    try {
+        const { data, error } = await supabase
+            .from('app_settings')
+            .select('value')
+            .eq('key', 'vip_price')
+            .maybeSingle();
+        
+        if (error) {
+            console.warn("VIP price fetch error (fallback 100):", error.message);
+            return res.json({ vip_price: 100 });
+        }
+        
+        const vip_price = data ? parseInt(data.value, 10) || 100 : 100;
+        res.json({ vip_price });
+    } catch (error) {
+        console.error("Get VIP price error:", error.message);
+        res.status(500).json({ error: 'Server error', vip_price: 100 });
+    }
+};
 
+module.exports = {
+    get_settings,
+    update_setting,
+    get_vip_price
+};
 
