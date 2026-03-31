@@ -53,7 +53,7 @@ const loyaltyRoutes = require('./routes/loyaltyRoutes');
 
 // 1. Public / Basic Routes
 app.use('/', homeRoutes);
-app.use('/api/auth', authRoutes);
+app.use('/api', authRoutes);
 app.use('/api/guest', guestRoutes);
 app.use('/api/devices', deviceRoutes);
 app.use('/api/missed-event', eventRoutes);
