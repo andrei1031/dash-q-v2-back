@@ -36,8 +36,8 @@ startCronJobs()
 const { auth, adminAuth } = require('./middleware/auth');
 
 // API ENDPOINTS START
-const homeRoutes = require('./routes/homeRoutes');
-app.use('/', homeRoutes); // Make sure you update the app.use line too!
+const home = require('./routes/homeRoutes');
+app.use('/api', home);
 
 const confirm = require('./routes/queueRoutes');
 app.use('/api/queue', confirm);
