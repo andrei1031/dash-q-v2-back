@@ -9,14 +9,12 @@ exports.get_analytics = async (req, res) => {
         const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
         const todayStr = nowPH.toISOString().split('T')[0];
 
-        // Fetch ALL finished cuts for this barber
+        // 🟢 FIXED: Checks for all possible variations of "Done"
         const { data: cuts, error } = await supabase
             .from('queue_entries')
-            // 🟢 FIXED: Added vip_charge to the select query to grab the real dynamic fee
             .select('id, status, updated_at, created_at, is_vip, head_count, tip_amount, vip_charge, services(price_php)')
             .eq('barber_id', barberId)
-            // 🟢 FIXED: Includes 'Done' status
-            .in('status', ['Done', 'Completed', 'completed']); 
+            .in('status', ['Done', 'done', 'Completed', 'completed']); 
 
         if (error) throw error;
 
@@ -30,7 +28,6 @@ exports.get_analytics = async (req, res) => {
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
         cuts.forEach(cut => {
-            // 🟢 FIXED MATH: Exact calculation matching the database
             const basePrice = parseFloat(cut.services?.price_php || 0);
             const heads = cut.head_count || 1;
             const vipFee = parseFloat(cut.vip_charge || 0); 
