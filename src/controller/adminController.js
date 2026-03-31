@@ -8,7 +8,6 @@ const db = supabaseAdmin;
 
 
 
-
 const { enforceQueueLogic } = createQueueHelpers(supabaseAdmin);
 
 // POST /api/admin/next-customer
