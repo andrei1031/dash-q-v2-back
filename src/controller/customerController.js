@@ -192,10 +192,9 @@ exports.customer_loyalty = async (req, res) => {
  * Now accepts a star rating (1-5) and comment.
  */
 exports.feedback = async (req, res) => {
-    // Destructure the numeric 'rating' field sent from the client
-    const { barber_id, customer_name, comments, rating } = req.body;
+    // 1. Extract queue_id from the request
+    const { barber_id, customer_name, comments, rating, queue_id } = req.body;
 
-    // 1. Validation: Ensure the rating is a valid integer between 1 and 5
     const customerRating = parseInt(rating);
     if (isNaN(customerRating) || customerRating < 1 || customerRating > 5) {
         return res.status(400).json({ error: 'A valid star rating (1-5) is required.' });
@@ -205,29 +204,27 @@ exports.feedback = async (req, res) => {
     }
 
     try {
-        const scoreToSave = customerRating; // scoreToSave will be 2 (or 3, 4, etc.)
+        const scoreToSave = customerRating;
 
-        // 2. CRITICAL WRITE: Insert the correct numeric rating into the 'score' column
+        // 2. Insert queue_id into Supabase
         const { error } = await supabase.from('feedback').insert({
             barber_id: parseInt(barber_id),
             customer_name: customer_name,
             comments: comments,
-            score: scoreToSave, // <--- This must write the numeric value (2)
+            score: scoreToSave,
+            queue_id: queue_id ? parseInt(queue_id) : null // <--- ADD THIS LINE
         });
 
         if (error) {
-            // If this error block is executed, the issue is database schema/RLS.
-            console.error(`[CRITICAL DB ERROR] Supabase insert failed: ${error.code} - ${error.message}`);
-            // Throwing the error will allow you to see the database reason in the server logs.
-            throw new Error(`Database Error: ${error.message}`);
+            console.error(`[CRITICAL DB ERROR] Supabase insert failed:`, error);
+            throw new Error(error.message);
         }
 
-        console.log(`[Feedback] Successfully saved rating ${scoreToSave} for barber ${barber_id}.`);
         res.status(201).json({ message: 'Feedback saved!', score: scoreToSave });
 
     } catch (error) {
-        console.error('[Feedback] Error saving feedback (General Catch):', error.message);
-        res.status(500).json({ error: 'Server error saving feedback. Final code fix applied. Please check Supabase schema/policies.' });
+        console.error('[Feedback] Error saving feedback:', error.message);
+        res.status(500).json({ error: error.message || 'Server error saving feedback.' });
     }
 }
 
