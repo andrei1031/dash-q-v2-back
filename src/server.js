@@ -120,7 +120,7 @@ const appointmentRoutes = require('./routes/appointmentRoutes');
 app.use('/api/appointments', auth, appointmentRoutes);
 
 const customerRoutes = require('./routes/customerRoutes');
-app.use('/api/customer', auth, customerRoutes);
+app.use('/api/customer', customerRoutes);
 
 const loyaltyRoutes = require('./routes/loyaltyRoutes');
 app.use('/api/loyalty', auth, loyaltyRoutes);

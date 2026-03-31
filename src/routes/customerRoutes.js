@@ -1,20 +1,13 @@
 const express = require('express');
 const router = express.Router();
+const customerController = require('../controller/customerController');
 
-const { 
-    
-    flag, 
-    history, 
-    customer_loyalty,
-    feedback,
-    get_feedback_barber
+// Customer History
+router.get('/history/:userId', customerController.history);
+router.get('/customer-loyalty/:customerEmail', customerController.customer_loyalty);
 
-    } = require('../controller/customerController');
-    
-router.put('/flag', flag);
-router.get('/history/:userId', history);
-router.get('/customer-loyalty/:customerEmail', customer_loyalty);
-router.post('/feedback', feedback);
-router.get('/feedback/:barberId', get_feedback_barber);
+// 🟢 FIX: Correctly mapped Feedback Routes 
+router.post('/feedback', customerController.feedback); // Matches frontend axios.post('/api/feedback')
+router.get('/feedback/:barberId', customerController.get_feedback_barber); // Matches frontend axios.get('/api/feedback/1')
 
 module.exports = router;
