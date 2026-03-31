@@ -1,34 +1,29 @@
 const axios = require("axios");
 const { supabase, supabaseAdmin } = require("../database/supabase");
 
-// Helper to ensure UTC
-const ensureUTC = (dateString) => {
-    if (!dateString) return dateString;
-    if (!dateString.endsWith('Z') && !dateString.includes('+')) {
-        return dateString + 'Z';
-    }
-    return dateString;
+// Helper: Convert total minutes into HH:MM:SS
+const formatTime = (totalMinutes) => {
+    const h = Math.floor(totalMinutes / 60);
+    const m = totalMinutes % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
 };
 
-// THE FIX: Format the time explicitly on the server
-const getFormattedTime = (dateString) => {
-    if (!dateString) return "Unknown Time";
-    try {
-        const utcDate = new Date(ensureUTC(dateString));
-        // Force Philippines Time
-        return utcDate.toLocaleTimeString('en-US', { 
-            timeZone: 'Asia/Manila', 
-            hour: '2-digit', 
-            minute: '2-digit',
-            hour12: true 
-        });
-    } catch (e) {
-        return dateString;
-    }
+// Helper: Generate "11:00 AM" directly from "2026-04-01T11:00:00"
+const getFormattedTime = (naiveString) => {
+    if (!naiveString) return "Unknown";
+    const timePart = naiveString.split('T')[1];
+    if (!timePart) return naiveString;
+    let [hours, mins] = timePart.split(':');
+    hours = parseInt(hours, 10);
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    hours = hours ? hours : 12; 
+    return `${String(hours).padStart(2, '0')}:${mins} ${ampm}`;
 };
 
 /**
- * ENDPOINT: Timezone-Aware Smart Slots
+ * ENDPOINT: "Naive Time" Smart Slots
+ * Completely ignores UTC. Calculates directly in literal Philippines time.
  */
 exports.slots = async (req, res) => {
     const { barberId, date, serviceId } = req.query;
@@ -38,49 +33,53 @@ exports.slots = async (req, res) => {
         const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', serviceId).single();
         const duration = service?.duration_minutes || 30;
 
-        const startIso = `${date}T10:30:00+08:00`; 
-        const closeIso = `${date}T19:00:00+08:00`; 
+        // Get current real PH time
+        const now = new Date();
+        const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+        const todayStr = `${nowPH.getUTCFullYear()}-${String(nowPH.getUTCMonth()+1).padStart(2,'0')}-${String(nowPH.getUTCDate()).padStart(2,'0')}`;
+        const currentPHMinutes = nowPH.getUTCHours() * 60 + nowPH.getUTCMinutes();
 
-        let slotIterator = new Date(startIso);
-        const closeTime = new Date(closeIso);
-        
-        const nowPH = new Date(new Date().getTime() + (8 * 60 * 60 * 1000));
-        
-        const dbStart = `${date}T00:00:00+08:00`;
-        const dbEnd = `${date}T23:59:59+08:00`;
+        let currentMinutes = 10 * 60 + 30; // 10:30 AM
+        const closeMinutes = 19 * 60; // 7:00 PM
 
+        // Query database using literal string matching
         const { data: bookings } = await supabase
             .from('appointments')
             .select('scheduled_time, end_time')
             .eq('barber_id', barberId)
             .in('status', ['confirmed', 'pending'])
-            .gte('scheduled_time', new Date(dbStart).toISOString())
-            .lte('scheduled_time', new Date(dbEnd).toISOString());
+            .gte('scheduled_time', `${date}T00:00:00`)
+            .lte('scheduled_time', `${date}T23:59:59`);
 
         let slots = [];
 
-        while (slotIterator < closeTime) {
-            const slotStart = new Date(slotIterator);
-            const slotEnd = new Date(slotIterator.getTime() + duration * 60000);
-
-            if (slotEnd > closeTime) break;
-            
-            if (slotStart < nowPH) {
-                slotIterator.setMinutes(slotIterator.getMinutes() + 30);
+        while (currentMinutes + duration <= closeMinutes) {
+            // Block past slots if booking for today
+            if (date === todayStr && currentMinutes <= currentPHMinutes) {
+                currentMinutes += 30;
                 continue;
             }
 
+            const slotStart = currentMinutes;
+            const slotEnd = currentMinutes + duration;
+
+            // Check if slot overlaps with existing bookings
             const isTaken = bookings?.some(b => {
-                const bookStart = new Date(ensureUTC(b.scheduled_time));
-                const bookEnd = new Date(ensureUTC(b.end_time));
-                return (slotStart < bookEnd && slotEnd > bookStart);
+                const bTime = b.scheduled_time.split('T')[1]; 
+                const bStartMin = parseInt(bTime.split(':')[0]) * 60 + parseInt(bTime.split(':')[1]);
+                
+                const eTime = b.end_time.split('T')[1]; 
+                const bEndMin = parseInt(eTime.split(':')[0]) * 60 + parseInt(eTime.split(':')[1]);
+                
+                return (slotStart < bEndMin && slotEnd > bStartMin);
             });
 
             if (!isTaken) {
-                slots.push(slotIterator.toISOString()); 
+                // Sends literal string like "2026-04-01T11:00:00"
+                slots.push(`${date}T${formatTime(currentMinutes)}`);
             }
 
-            slotIterator.setMinutes(slotIterator.getMinutes() + 30);
+            currentMinutes += 30;
         }
 
         res.json(slots);
@@ -92,45 +91,58 @@ exports.slots = async (req, res) => {
 };
 
 /**
- * ENDPOINT: Book an Appointment
+ * ENDPOINT: Book an Appointment (NAIVE TIME)
  */
 exports.book = async (req, res) => {
     const { customer_name, customer_email, user_id, barber_id, service_id, scheduled_time } = req.body;
     
+    // Clean whatever the frontend sends down to a literal "YYYY-MM-DDTHH:MM:SS"
+    let cleanTime = scheduled_time.split('.')[0].split('+')[0]; 
+    if (cleanTime.endsWith('Z')) cleanTime = cleanTime.slice(0, -1);
+
     try {
         const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', service_id).single();
         const duration = service?.duration_minutes || 30;
 
-        const startDate = new Date(scheduled_time);
-        const endDate = new Date(startDate.getTime() + duration * 60000);
+        const datePart = cleanTime.split('T')[0];
+        const timePart = cleanTime.split('T')[1];
+        
+        const startMins = parseInt(timePart.split(':')[0]) * 60 + parseInt(timePart.split(':')[1]);
+        const endMins = startMins + duration;
+        
+        // The exact literal time it will end
+        const end_time = `${datePart}T${formatTime(endMins)}`;
 
+        // Strict String comparison for conflicts
         const { data: conflict } = await supabase
             .from('appointments')
             .select('id')
             .eq('barber_id', barber_id)
             .in('status', ['confirmed', 'pending'])
-            .lt('scheduled_time', endDate.toISOString())
-            .gt('end_time', startDate.toISOString())
+            .lt('scheduled_time', end_time)
+            .gt('end_time', cleanTime)
             .maybeSingle();
 
         if (conflict) {
             return res.status(409).json({ error: 'Slot is pending approval or taken. Please choose another.' });
         }
 
+        // Insert exactly the literal strings into Supabase
         const { data, error } = await supabase.from('appointments').insert({
             customer_name,
             customer_email,
             user_id,
             barber_id,
             service_id,
-            scheduled_time: startDate.toISOString(),
-            end_time: endDate.toISOString(),
+            scheduled_time: cleanTime, // Supabase will save EXACTLY 11:00:00
+            end_time: end_time,        // Supabase will save EXACTLY 11:30:00
             status: 'pending',
             is_converted_to_queue: false
         }).select().single();
 
         if (error) throw error;
         
+        // Send Notification
         try {
             const { data: barberUser } = await supabaseAdmin.from('barber_profiles').select('user_id').eq('id', barber_id).single();
             if (barberUser && process.env.N8N_WEBHOOK_URL) {
@@ -141,7 +153,7 @@ exports.book = async (req, res) => {
                         type: 'barber_alert',
                         email: barberEmail,
                         subject: '✂️ New Booking Received!',
-                        message: `You have a new appointment with ${customer_name} on ${getFormattedTime(startDate.toISOString())}.`
+                        message: `You have a new appointment with ${customer_name} on ${getFormattedTime(cleanTime)}.`
                     });
                 }
             }
@@ -170,10 +182,8 @@ exports.get_customer_appointments = async (req, res) => {
 
         if (error) throw error;
         
-        // ADD FORMATTED TIME
         const fixedData = data?.map(appt => ({
             ...appt,
-            scheduled_time: ensureUTC(appt.scheduled_time),
             formatted_time: getFormattedTime(appt.scheduled_time)
         }));
 
@@ -189,19 +199,20 @@ exports.get_customer_appointments = async (req, res) => {
 exports.get_all_appointments = async (req, res) => {
     try {
         const now = new Date();
+        const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+        const todayStr = `${nowPH.getUTCFullYear()}-${String(nowPH.getUTCMonth()+1).padStart(2,'0')}-${String(nowPH.getUTCDate()).padStart(2,'0')}T00:00:00`;
+
         const { data, error } = await supabase
             .from('appointments')
             .select(`id, scheduled_time, customer_name, customer_email, status, is_converted_to_queue, barber_profiles(full_name), services(name, duration_minutes)`)
             .in('status', ['confirmed', 'pending']) 
-            .gte('scheduled_time', now.toISOString()) 
+            .gte('scheduled_time', todayStr) 
             .order('scheduled_time', { ascending: true });
 
         if (error) throw error;
         
-        // ADD FORMATTED TIME
         const fixedData = data?.map(appt => ({
             ...appt,
-            scheduled_time: ensureUTC(appt.scheduled_time),
             formatted_time: getFormattedTime(appt.scheduled_time)
         }));
 
@@ -220,22 +231,21 @@ exports.get_barber_appointments = async (req, res) => {
 
     try {
         const now = new Date();
-        now.setHours(0,0,0,0); 
+        const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+        const todayStr = `${nowPH.getUTCFullYear()}-${String(nowPH.getUTCMonth()+1).padStart(2,'0')}-${String(nowPH.getUTCDate()).padStart(2,'0')}T00:00:00`;
 
         const { data, error } = await supabase
             .from('appointments')
             .select(`id, scheduled_time, customer_name, customer_email, status, is_converted_to_queue, services(name, duration_minutes)`)
             .eq('barber_id', barberId)
             .in('status', ['confirmed', 'pending']) 
-            .gte('scheduled_time', now.toISOString()) 
+            .gte('scheduled_time', todayStr) 
             .order('scheduled_time', { ascending: true }); 
 
         if (error) throw error;
         
-        // ADD FORMATTED TIME
         const fixedData = data?.map(appt => ({
             ...appt,
-            scheduled_time: ensureUTC(appt.scheduled_time),
             formatted_time: getFormattedTime(appt.scheduled_time)
         }));
 
@@ -264,9 +274,17 @@ exports.approve = async (req, res) => {
 };
 
 exports.process_appointments = async (req, res) => {
-    const lookBack = new Date(new Date().getTime() - 24 * 60 * 60 * 1000); 
+    const now = new Date();
+    const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+    const lookBackPH = new Date(nowPH.getTime() - 24 * 60 * 60 * 1000);
+    const lbY = lookBackPH.getUTCFullYear();
+    const lbM = String(lookBackPH.getUTCMonth()+1).padStart(2,'0');
+    const lbD = String(lookBackPH.getUTCDate()).padStart(2,'0');
+    const lookBackStr = `${lbY}-${lbM}-${lbD}T00:00:00`;
+
     try {
-        const { data: missed, error } = await supabase.from('appointments').select('*').in('status', ['confirmed']).eq('is_converted_to_queue', false).gte('scheduled_time', lookBack.toISOString());
+        const { data: missed, error } = await supabase.from('appointments')
+            .select('*').in('status', ['confirmed']).eq('is_converted_to_queue', false).gte('scheduled_time', lookBackStr);
         if (error) throw error;
 
         const results = [];
