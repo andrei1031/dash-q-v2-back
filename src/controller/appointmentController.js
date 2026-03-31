@@ -1,14 +1,30 @@
 const axios = require("axios");
 const { supabase, supabaseAdmin } = require("../database/supabase");
 
-// THE FIX: If the database stripped the 'Z' (UTC marker), add it back.
-// This forces the frontend browser to say "Ah! This is UTC, I need to add +8 hours for the Philippines."
+// Helper to ensure UTC
 const ensureUTC = (dateString) => {
     if (!dateString) return dateString;
     if (!dateString.endsWith('Z') && !dateString.includes('+')) {
         return dateString + 'Z';
     }
     return dateString;
+};
+
+// THE FIX: Format the time explicitly on the server
+const getFormattedTime = (dateString) => {
+    if (!dateString) return "Unknown Time";
+    try {
+        const utcDate = new Date(ensureUTC(dateString));
+        // Force Philippines Time
+        return utcDate.toLocaleTimeString('en-US', { 
+            timeZone: 'Asia/Manila', 
+            hour: '2-digit', 
+            minute: '2-digit',
+            hour12: true 
+        });
+    } catch (e) {
+        return dateString;
+    }
 };
 
 /**
@@ -22,7 +38,6 @@ exports.slots = async (req, res) => {
         const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', serviceId).single();
         const duration = service?.duration_minutes || 30;
 
-        // Force exactly 10:30 AM and 7:00 PM in Philippines time
         const startIso = `${date}T10:30:00+08:00`; 
         const closeIso = `${date}T19:00:00+08:00`; 
 
@@ -31,7 +46,6 @@ exports.slots = async (req, res) => {
         
         const nowPH = new Date(new Date().getTime() + (8 * 60 * 60 * 1000));
         
-        // Query the database for the whole day
         const dbStart = `${date}T00:00:00+08:00`;
         const dbEnd = `${date}T23:59:59+08:00`;
 
@@ -51,13 +65,11 @@ exports.slots = async (req, res) => {
 
             if (slotEnd > closeTime) break;
             
-            // Skip past slots
             if (slotStart < nowPH) {
                 slotIterator.setMinutes(slotIterator.getMinutes() + 30);
                 continue;
             }
 
-            // Check if slot overlaps with existing bookings
             const isTaken = bookings?.some(b => {
                 const bookStart = new Date(ensureUTC(b.scheduled_time));
                 const bookEnd = new Date(ensureUTC(b.end_time));
@@ -65,7 +77,6 @@ exports.slots = async (req, res) => {
             });
 
             if (!isTaken) {
-                // Standardize the output completely
                 slots.push(slotIterator.toISOString()); 
             }
 
@@ -120,7 +131,6 @@ exports.book = async (req, res) => {
 
         if (error) throw error;
         
-        // Notification Logic
         try {
             const { data: barberUser } = await supabaseAdmin.from('barber_profiles').select('user_id').eq('id', barber_id).single();
             if (barberUser && process.env.N8N_WEBHOOK_URL) {
@@ -131,7 +141,7 @@ exports.book = async (req, res) => {
                         type: 'barber_alert',
                         email: barberEmail,
                         subject: '✂️ New Booking Received!',
-                        message: `You have a new appointment with ${customer_name} on ${startDate.toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}.`
+                        message: `You have a new appointment with ${customer_name} on ${getFormattedTime(startDate.toISOString())}.`
                     });
                 }
             }
@@ -160,10 +170,11 @@ exports.get_customer_appointments = async (req, res) => {
 
         if (error) throw error;
         
-        // ADD UTC MARKER BEFORE SENDING
+        // ADD FORMATTED TIME
         const fixedData = data?.map(appt => ({
             ...appt,
-            scheduled_time: ensureUTC(appt.scheduled_time)
+            scheduled_time: ensureUTC(appt.scheduled_time),
+            formatted_time: getFormattedTime(appt.scheduled_time)
         }));
 
         res.json(fixedData || []);
@@ -187,10 +198,11 @@ exports.get_all_appointments = async (req, res) => {
 
         if (error) throw error;
         
-        // ADD UTC MARKER BEFORE SENDING
+        // ADD FORMATTED TIME
         const fixedData = data?.map(appt => ({
             ...appt,
-            scheduled_time: ensureUTC(appt.scheduled_time)
+            scheduled_time: ensureUTC(appt.scheduled_time),
+            formatted_time: getFormattedTime(appt.scheduled_time)
         }));
 
         res.json(fixedData || []);
@@ -220,10 +232,11 @@ exports.get_barber_appointments = async (req, res) => {
 
         if (error) throw error;
         
-        // ADD UTC MARKER BEFORE SENDING
+        // ADD FORMATTED TIME
         const fixedData = data?.map(appt => ({
             ...appt,
-            scheduled_time: ensureUTC(appt.scheduled_time)
+            scheduled_time: ensureUTC(appt.scheduled_time),
+            formatted_time: getFormattedTime(appt.scheduled_time)
         }));
 
         res.json(fixedData || []);
