@@ -111,7 +111,7 @@ app.use('/api/queue', auth, queueRoutes);
 
 // Protected routes (cleaned - no duplicates)
 const settingsRoutes = require('./routes/settingsRoutes');
-app.use('/api/settings', settingsRoutes);  // PUBLIC: customers need vip-price!
+app.use('/api', settingsRoutes); // PUBLIC: customers need vip-price!
 
 const chatRoutes = require('./routes/chatRoutes');
 app.use('/api/chat', auth, chatRoutes);
