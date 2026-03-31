@@ -1,16 +1,14 @@
-
 const http = require('http');
-const express = require('express')
+const express = require('express');
 const bodyParser = require('body-parser');
-const barber = require('./config/barber');
+const barberConfig = require('./config/barber'); // Renamed to avoid collision with barberRoutes
 const { startCronJobs } = require('./cron');
 const cors = require('cors');
 
-
-// --- Configure our "tools" ---
+// --- Configure App and Middleware ---
 const app = express();
 const corsOptions = {
-    origin: ['https://dash-q-sigma.vercel.app', 'http://localhost:3000', 'https://dash-q-sigma.vercel.app'],
+    origin: ['https://dash-q-sigma.vercel.app', 'http://localhost:3000'],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
@@ -21,171 +19,70 @@ app.use(express.json());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-
-// example: log or sanity check (optional)
+// Log sanity check
 console.log("🔐 Barber config loaded:", {
-    signupCodeSet: !!barber.BARBER_SIGNUP_CODE,
-    loginPinSet: !!barber.BARBER_LOGIN_PIN,
+    signupCodeSet: !!barberConfig.BARBER_SIGNUP_CODE,
+    loginPinSet: !!barberConfig.BARBER_LOGIN_PIN,
 });
 
-// --- CRON: Process Upcoming Appointments (Smart Auto-Chair) ---
-
-startCronJobs()
+// --- Start Background Jobs ---
+startCronJobs();
 
 // Auth middleware
-const { auth, adminAuth } = require('./middleware/auth');
+const { auth } = require('./middleware/auth');
 
-// API ENDPOINTS START
+// --- Import All Routes ---
 const homeRoutes = require('./routes/homeRoutes');
-app.use('/', homeRoutes); // Make sure you update the app.use line too!
-
-const confirm = require('./routes/queueRoutes');
-app.use('/api/queue', confirm);
-
-const push_manual = require('./routes/notificationRoutes');
-app.use('/api/test', push_manual);
-
-const subscribe = require('./routes/notificationRoutes');
-app.use('/api', subscribe);
-
-const check_email = require('./routes/authRoutes');
-app.use('/api', check_email);
-
-const location = require('./routes/queueRoutes');
-app.use('/api/queue', location);
-
-const flag = require('./routes/customerRoutes');
-app.use('/api/logout', flag);   
-
-const history = require('./routes/customerRoutes');
-app.use('/api/customer', history);
-
-const slots = require('./routes/appointmentRoutes');
-app.use('/api/appointments', slots);
-
-const book = require('./routes/appointmentRoutes');
-app.use('/api/appointments', book);
-
-const reject = require('./routes/appointmentRoutes');
-app.use('/api/appointments', reject);
-
-const approve = require('./routes/appointmentRoutes');
-app.use('/api/appointments', approve);
-
-const send = require('./routes/chatRoutes');
-app.use('/api/chat', send);
-
-const read = require('./routes/chatRoutes');
-app.use('/api/chat', read);
-
-const customer_loyalty = require('./routes/customerRoutes');
-app.use('/api/barber', customer_loyalty);
-
-const services = require('./routes/serviceRoutes');
-app.use('/api', services);
-
-const barbers = require('./routes/barberRoutes');
-app.use('/api', barbers);
-
-const profile = require('./routes/barberRoutes');
-app.use('/api', profile);
-
-const availability = require('./routes/barberRoutes');
-app.use('/api', availability);
-
-const earnings = require('./routes/barberRoutes');
-app.use('/api', earnings);
-
-const signup = require('./routes/authRoutes');
-app.use('/api', signup);
-
-const login = require('./routes/authRoutes');
-app.use('/api', login);
-
-const guest_login = require('./routes/authRoutes');
-app.use('/api', guest_login);
-
-// Protected queue routes
 const queueRoutes = require('./routes/queueRoutes');
-app.use('/api/queue', auth, queueRoutes);
-
-// Protected routes (cleaned - no duplicates)
-const settingsRoutes = require('./routes/settingsRoutes');
-app.use('/api/settings', settingsRoutes);  // PUBLIC: customers need vip-price!
-
-const chatRoutes = require('./routes/chatRoutes');
-app.use('/api/chat', auth, chatRoutes);
-
-const appointmentRoutes = require('./routes/appointmentRoutes');
-app.use('/api/appointments', auth, appointmentRoutes);
-
+const notificationRoutes = require('./routes/notificationRoutes');
+const authRoutes = require('./routes/authRoutes');
 const customerRoutes = require('./routes/customerRoutes');
-app.use('/api/customer', auth, customerRoutes);
-
-const loyaltyRoutes = require('./routes/loyaltyRoutes');
-app.use('/api/loyalty', auth, loyaltyRoutes);
-
-// Admin routes - mounted once at /api/admin
+const appointmentRoutes = require('./routes/appointmentRoutes');
+const chatRoutes = require('./routes/chatRoutes');
+const serviceRoutes = require('./routes/serviceRoutes');
+const barberRoutes = require('./routes/barberRoutes');
+const settingsRoutes = require('./routes/settingsRoutes');
 const adminRoutes = require('./routes/adminRoutes');
-app.use('/api/admin', adminRoutes);
-
-// Device blocking routes
 const deviceRoutes = require('./routes/deviceRoutes');
-app.use('/api/devices', deviceRoutes);
-
-// Guest queue routes
 const guestRoutes = require('./routes/guestRoutes');
-app.use('/api/guest', guestRoutes);
-
-// Clean public routes (no duplicates)
-const publicServices = require('./routes/serviceRoutes');
-app.use('/api/services', publicServices);
-
-const publicBarbers = require('./routes/barberRoutes');
-app.use('/api/barbers', publicBarbers);
-
-const publicQueue = require('./routes/queueRoutes');
-app.use('/api/queue/public', publicQueue);
-
-const feedbackPublic = require('./routes/customerRoutes');
-app.use('/api/feedback', feedbackPublic);
-
-const get_customer_appointments = require('./routes/appointmentRoutes');
-app.use('/api/appointments/my', get_customer_appointments);
-
-const feedback = require('./routes/customerRoutes');
-app.use('/api/feedback/create', feedback)
-
-const get_feedback_barber = require('./routes/customerRoutes');
-app.use('/api/feedback/barber', get_feedback_barber)
-
-const missed_events = require('./routes/eventRoutes');
-app.use('/api/missed-event', missed_events);
-
-const submit_reports = require('./routes/reportsRoutes');
-app.use('/api/reports/create', submit_reports);
-
-const get_user_submitted_reports = require('./routes/reportsRoutes');
-app.use('/api/reports/my', get_user_submitted_reports);
-
-const get_barber_appointments = require('./routes/appointmentRoutes');
-app.use('/api/appointments/barber', get_barber_appointments);
-
-const process_appointments = require('./routes/appointmentRoutes');
-app.use('/api/appointments/process', process_appointments);
-
-// API ENDPOINTS END
-
-const server = http.createServer(app);
+const eventRoutes = require('./routes/eventRoutes');
+const reportsRoutes = require('./routes/reportsRoutes');
+const loyaltyRoutes = require('./routes/loyaltyRoutes');
 
 // --- API Endpoints ---
 
+// 1. Public / Basic Routes
+app.use('/', homeRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/guest', guestRoutes);
+app.use('/api/devices', deviceRoutes);
+app.use('/api/missed-event', eventRoutes);
 
-[server.js] 
+// 2. Settings (Publicly accessible for VIP price)
+app.use('/api/settings', settingsRoutes);
 
+// 3. Queue Routes (Mix of Public/Protected within router)
+app.use('/api/queue', queueRoutes);
 
-// --- Start the server ---
+// 4. Barber & Service Information (Publicly accessible)
+app.use('/api/barbers', barberRoutes);
+app.use('/api/services', serviceRoutes);
 
+// 5. Feedback & Reports
+app.use('/api/feedback', customerRoutes);
+app.use('/api/reports', reportsRoutes);
+
+// 6. Protected Routes (Require Token)
+app.use('/api/customer', auth, customerRoutes);
+app.use('/api/appointments', auth, appointmentRoutes);
+app.use('/api/chat', auth, chatRoutes);
+app.use('/api/loyalty', auth, loyaltyRoutes);
+app.use('/api/notifications', auth, notificationRoutes);
+
+// 7. Admin Routes (Protected)
+app.use('/api/admin', auth, adminRoutes);
+
+// --- Start the Server ---
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
     console.log(`Dash-Q Backend Server is running on port ${PORT}`);

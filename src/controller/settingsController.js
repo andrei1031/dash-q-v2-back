@@ -2,6 +2,7 @@ const { supabase } = require("../database/supabase");
 
 /**
  * ENDPOINT: Get all settings
+ * Fetches all keys and values from the app_settings table.
  */
 exports.get_settings = async (req, res) => {
     try {
@@ -11,7 +12,7 @@ exports.get_settings = async (req, res) => {
         
         if (error) throw error;
         
-        // Convert array to key-value object
+        // Convert array of objects into a single key-value object for easier frontend use
         const settings = {};
         data.forEach(item => {
             settings[item.key] = item.value;
@@ -20,13 +21,14 @@ exports.get_settings = async (req, res) => {
         res.json(settings);
     } catch (error) {
         console.error("Get settings error:", error.message);
-        // Return empty settings if table doesn't exist
+        // Return empty settings object as fallback to prevent frontend crashes
         res.json({});
     }
 };
 
 /**
  * ENDPOINT: Update a setting
+ * Inserts a new setting or updates an existing one based on the key.
  */
 exports.update_setting = async (req, res) => {
     const { key, value } = req.body;
@@ -36,7 +38,7 @@ exports.update_setting = async (req, res) => {
     }
     
     try {
-        // Try to update first
+        // Check if the setting key already exists
         const { data: existing, error: fetchError } = await supabase
             .from('app_settings')
             .select('id')
@@ -46,7 +48,7 @@ exports.update_setting = async (req, res) => {
         if (fetchError) throw fetchError;
         
         if (existing) {
-            // Update existing
+            // Update the existing key
             const { error } = await supabase
                 .from('app_settings')
                 .update({ value: String(value) })
@@ -54,7 +56,7 @@ exports.update_setting = async (req, res) => {
             
             if (error) throw error;
         } else {
-            // Insert new
+            // Insert as a new key
             const { error } = await supabase
                 .from('app_settings')
                 .insert({ key, value: String(value) });
@@ -70,7 +72,8 @@ exports.update_setting = async (req, res) => {
 };
 
 /**
- * ENDPOINT: Get VIP price specifically - for CustomerView/AdminAppLayout/BarberDashboard
+ * ENDPOINT: Get VIP price specifically
+ * Specifically used by CustomerView, Admin layouts, and Barber dashboards.
  * Path: GET /api/settings/vip-price
  */
 exports.get_vip_price = async (req, res) => {
@@ -86,8 +89,9 @@ exports.get_vip_price = async (req, res) => {
             return res.json({ vip_price: 100 });
         }
         
+        // Convert the string value from DB to an integer, defaulting to 100 if empty
         const vip_price = data ? parseInt(data.value, 10) || 100 : 100;
-        console.log(`VIP price served: ${vip_price}`); // Debug log
+        console.log(`VIP price served: ${vip_price}`); 
         res.json({ vip_price });
     } catch (error) {
         console.error("Get VIP price error:", error.message);
@@ -95,9 +99,9 @@ exports.get_vip_price = async (req, res) => {
     }
 };
 
+// Explicitly export all functions to ensure they are available to routes
 module.exports = {
-    get_settings,
-    update_setting,
-    get_vip_price
+    get_settings: exports.get_settings,
+    update_setting: exports.update_setting,
+    get_vip_price: exports.get_vip_price
 };
-
