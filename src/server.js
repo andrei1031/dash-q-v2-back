@@ -131,7 +131,7 @@ app.use('/api/admin', adminRoutes);
 
 // Device blocking routes
 const deviceRoutes = require('./routes/deviceRoutes');
-app.use('/api/devices', deviceRoutes);
+app.use('/api', deviceRoutes);
 
 // Guest queue routes
 const guestRoutes = require('./routes/guestRoutes');
