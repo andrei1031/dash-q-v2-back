@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
+const analyticsController = require('../controller/analyticsController');
 
-const { analytics_barber } = require('../controller/analyticsController');
-
-router.get('/analytics/:barberId', analytics_barber);
+// The error is happening here because the second argument is likely undefined
+router.get('/:barberId', analyticsController.get_analytics);
 
 module.exports = router;
