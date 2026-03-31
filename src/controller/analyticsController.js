@@ -12,9 +12,10 @@ exports.get_analytics = async (req, res) => {
         // 🟢 FIXED: Checks for all possible variations of "Done"
         const { data: cuts, error } = await supabase
             .from('queue_entries')
-            .select('id, status, updated_at, created_at, is_vip, head_count, tip_amount, vip_charge, services(price_php)')
+            .select('id, status, updated_at, created_at, is_vip, head_count, tip_amount, services(price_php)')
             .eq('barber_id', barberId)
-            .in('status', ['Done', 'done', 'Completed', 'completed']); 
+            // 🟢 MAKE SURE 'Done' IS HERE
+            .in('status', ['Done', 'Completed', 'completed']);
 
         if (error) throw error;
 
