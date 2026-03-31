@@ -107,7 +107,7 @@ app.use('/api', guest_login);
 
 // Protected queue routes
 const queueRoutes = require('./routes/queueRoutes');
-app.use('/api/queue', auth, queueRoutes);
+app.use('/api', auth, queueRoutes);
 
 // Protected routes (cleaned - no duplicates)
 const settingsRoutes = require('./routes/settingsRoutes');
