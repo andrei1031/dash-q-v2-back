@@ -5,7 +5,6 @@ exports.get_analytics = async (req, res) => {
     if (!barberId) return res.status(400).json({ error: 'Barber ID required' });
 
     try {
-        // Get current date in Philippines timezone
         const now = new Date();
         const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
         const todayStr = nowPH.toISOString().split('T')[0];
@@ -13,9 +12,11 @@ exports.get_analytics = async (req, res) => {
         // Fetch ALL finished cuts for this barber
         const { data: cuts, error } = await supabase
             .from('queue_entries')
-            .select('id, status, updated_at, created_at, is_vip, head_count, tip_amount, services(price_php)')
+            // 🟢 FIXED: Added vip_charge to the select query to grab the real dynamic fee
+            .select('id, status, updated_at, created_at, is_vip, head_count, tip_amount, vip_charge, services(price_php)')
             .eq('barber_id', barberId)
-            .in('status', ['Done', 'Completed', 'completed']); // 🟢 FIX: Matches our 'Done' status!
+            // 🟢 FIXED: Includes 'Done' status
+            .in('status', ['Done', 'Completed', 'completed']); 
 
         if (error) throw error;
 
@@ -29,25 +30,23 @@ exports.get_analytics = async (req, res) => {
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
         cuts.forEach(cut => {
-            // 🟢 FIX: Perfect Math Calculation (Base * Heads + VIP + Tip)
+            // 🟢 FIXED MATH: Exact calculation matching the database
             const basePrice = parseFloat(cut.services?.price_php || 0);
             const heads = cut.head_count || 1;
-            const vipFee = cut.is_vip ? (100 * heads) : 0; // Assuming 100 is VIP price
+            const vipFee = parseFloat(cut.vip_charge || 0); 
             const tip = parseFloat(cut.tip_amount || 0);
+            
             const profit = (basePrice * heads) + vipFee + tip;
 
-            // Determine date of cut in PH time
             const cutDate = new Date(cut.updated_at || cut.created_at);
             const cutDatePH = new Date(cutDate.getTime() + (8 * 60 * 60 * 1000));
             const dateString = cutDatePH.toISOString().split('T')[0];
 
-            // Add to Today
             if (dateString === todayStr) {
                 totalEarningsToday += profit;
                 totalCutsToday += heads; 
             }
 
-            // Add to Week
             if (cutDatePH >= sevenDaysAgo) {
                 totalEarningsWeek += profit;
                 totalCutsWeek += heads;
@@ -57,7 +56,6 @@ exports.get_analytics = async (req, res) => {
             }
         });
 
-        // Format chart data
         let dailyData = [];
         let maxDay = { name: 'N/A', earnings: 0 };
         
@@ -69,7 +67,6 @@ exports.get_analytics = async (req, res) => {
             }
         });
 
-        // Get current queue length
         const { count: queueCount } = await supabase
             .from('queue_entries')
             .select('id', { count: 'exact', head: true })
