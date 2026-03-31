@@ -36,8 +36,8 @@ startCronJobs()
 const { auth, adminAuth } = require('./middleware/auth');
 
 // API ENDPOINTS START
-const home = require('./routes/homeRoutes');
-app.use('/api', home);
+const homeRoutes = require('./routes/homeRoutes');
+app.use('/', homeRoutes); // Make sure you update the app.use line too!
 
 const confirm = require('./routes/queueRoutes');
 app.use('/api/queue', confirm);
@@ -109,8 +109,9 @@ app.use('/api', guest_login);
 const queueRoutes = require('./routes/queueRoutes');
 app.use('/api/queue', auth, queueRoutes);
 
-const settings = require('./routes/settingsRoutes');
-app.use('/api/settings', adminAuth, settings);
+// Protected routes (cleaned - no duplicates)
+const settingsRoutes = require('./routes/settingsRoutes');
+app.use('/api/settings', settingsRoutes);  // PUBLIC: customers need vip-price!
 
 const chatRoutes = require('./routes/chatRoutes');
 app.use('/api/chat', auth, chatRoutes);
@@ -124,15 +125,24 @@ app.use('/api/customer', auth, customerRoutes);
 const loyaltyRoutes = require('./routes/loyaltyRoutes');
 app.use('/api/loyalty', auth, loyaltyRoutes);
 
-// Public routes remain unchanged
-const home = require('./routes/homeRoutes');
-app.use('/api', home);
+// Admin routes - mounted once at /api/admin
+const adminRoutes = require('./routes/adminRoutes');
+app.use('/api/admin', adminRoutes);
 
-const services = require('./routes/serviceRoutes');
-app.use('/api/services', services);
+// Device blocking routes
+const deviceRoutes = require('./routes/deviceRoutes');
+app.use('/api/devices', deviceRoutes);
 
-const barbersPublic = require('./routes/barberRoutes');
-app.use('/api/barbers', barbersPublic);
+// Guest queue routes
+const guestRoutes = require('./routes/guestRoutes');
+app.use('/api/guest', guestRoutes);
+
+// Clean public routes (no duplicates)
+const publicServices = require('./routes/serviceRoutes');
+app.use('/api/services', publicServices);
+
+const publicBarbers = require('./routes/barberRoutes');
+app.use('/api/barbers', publicBarbers);
 
 const publicQueue = require('./routes/queueRoutes');
 app.use('/api/queue/public', publicQueue);
@@ -141,47 +151,28 @@ const feedbackPublic = require('./routes/customerRoutes');
 app.use('/api/feedback', feedbackPublic);
 
 const get_customer_appointments = require('./routes/appointmentRoutes');
-app.use('/api/appointments', get_customer_appointments);
+app.use('/api/appointments/my', get_customer_appointments);
 
 const feedback = require('./routes/customerRoutes');
-app.use('/api', feedback)
+app.use('/api/feedback/create', feedback)
 
 const get_feedback_barber = require('./routes/customerRoutes');
-app.use('/api', get_feedback_barber)
+app.use('/api/feedback/barber', get_feedback_barber)
 
 const missed_events = require('./routes/eventRoutes');
-app.use('/api', missed_events);
-
-// Admin routes - mounted once at /api/admin
-const adminRoutes = require('./routes/adminRoutes');
-app.use('/api/admin', adminRoutes);
+app.use('/api/missed-event', missed_events);
 
 const submit_reports = require('./routes/reportsRoutes');
-app.use('/api', submit_reports);
+app.use('/api/reports/create', submit_reports);
 
 const get_user_submitted_reports = require('./routes/reportsRoutes');
-app.use('/api', get_user_submitted_reports);
+app.use('/api/reports/my', get_user_submitted_reports);
 
 const get_barber_appointments = require('./routes/appointmentRoutes');
-app.use('/api', get_barber_appointments);
+app.use('/api/appointments/barber', get_barber_appointments);
 
 const process_appointments = require('./routes/appointmentRoutes');
-app.use('/api', process_appointments);
-
-const settings = require('./routes/settingsRoutes');
-app.use('/api', settings);
-
-// Device blocking routes
-const deviceRoutes = require('./routes/deviceRoutes');
-app.use('/api', deviceRoutes);
-
-// Guest queue routes
-const guestRoutes = require('./routes/guestRoutes');
-app.use('/api/guest', guestRoutes);
-
-// Loyalty & Rewards routes
-const loyaltyRoutes = require('./routes/loyaltyRoutes');
-app.use('/api', loyaltyRoutes);
+app.use('/api/appointments/process', process_appointments);
 
 // API ENDPOINTS END
 

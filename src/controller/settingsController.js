@@ -70,7 +70,8 @@ exports.update_setting = async (req, res) => {
 };
 
 /**
- * ENDPOINT: Get VIP price specifically (Frontend: CustomerView, AdminAppLayout expect /settings/vip-price)
+ * ENDPOINT: Get VIP price specifically - for CustomerView/AdminAppLayout/BarberDashboard
+ * Path: GET /api/settings/vip-price
  */
 exports.get_vip_price = async (req, res) => {
     try {
@@ -81,11 +82,12 @@ exports.get_vip_price = async (req, res) => {
             .maybeSingle();
         
         if (error) {
-            console.warn("VIP price fetch error (fallback 100):", error.message);
+            console.warn("VIP price query error (fallback 100):", error.message);
             return res.json({ vip_price: 100 });
         }
         
         const vip_price = data ? parseInt(data.value, 10) || 100 : 100;
+        console.log(`VIP price served: ${vip_price}`); // Debug log
         res.json({ vip_price });
     } catch (error) {
         console.error("Get VIP price error:", error.message);
