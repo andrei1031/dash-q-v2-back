@@ -576,7 +576,8 @@ exports.complete = async (req, res) => {
             .from('queue_entries')
             .update({ 
                 status: 'Done', 
-                tip_amount: tipInt // <--- CRITICAL: SAVES TIP TO HISTORY
+                tip_amount: tipInt, // <--- CRITICAL: SAVES TIP TO HISTORY
+                vip_charge: vipChargeInt
             })
             .eq('id', queueIdInt)
             .eq('status', 'In Progress');
