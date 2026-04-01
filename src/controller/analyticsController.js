@@ -12,9 +12,9 @@ exports.get_analytics = async (req, res) => {
 
         const { data: cuts, error } = await supabase
             .from('queue_entries')
-            .select('id, status, updated_at, created_at, is_vip, head_count, tip_amount, vip_charge, services(price_php)')
+            .select('id, status, updated_at, created_at, head_count, tip_amount, vip_charge, services(price_php)')
             .eq('barber_id', barberId)
-            .in('status', ['Done', 'Completed', 'completed']); 
+            .in('status', ['Done']); // Match the 'Done' status from queueController 
 
         if (error) throw error;
 
@@ -31,8 +31,10 @@ exports.get_analytics = async (req, res) => {
         safeCuts.forEach(cut => {
             const basePrice = parseFloat(cut.services?.price_php || 0);
             const heads = cut.head_count || 1;
-            const vipFee = parseFloat(cut.vip_charge || 0); 
+            const vipFee = parseFloat(cut.vip_charge || 0); // Real stored 600
             const tip = parseFloat(cut.tip_amount || 0);
+            
+            // Result: (400 * 2) + 600 + 0 = 1400 (if heads=2) or similar
             const profit = (basePrice * heads) + vipFee + tip;
 
             // 🟢 FIX 3: Ensure comparison uses PH-adjusted timestamps
