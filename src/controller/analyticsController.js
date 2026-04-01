@@ -5,11 +5,11 @@ exports.get_analytics = async (req, res) => {
     if (!barberId) return res.status(400).json({ error: 'Barber ID required' });
 
     try {
-        // Get current date in Philippines timezone
+        // 🟢 FIX 1: Correct Philippines Timezone Offset (+8 Hours)
         const now = new Date();
-        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        const phTime = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+        const startOfToday = new Date(phTime.getFullYear(), phTime.getMonth(), phTime.getDate()).getTime();
 
-        // 🟢 FIXED: Added 'vip_charge' to the select query to get real stored data
         const { data: cuts, error } = await supabase
             .from('queue_entries')
             .select('id, status, updated_at, created_at, is_vip, head_count, tip_amount, vip_charge, services(price_php)')
@@ -18,45 +18,49 @@ exports.get_analytics = async (req, res) => {
 
         if (error) throw error;
 
+        // 🟢 FIX 2: Prevent crash if cuts is null
+        const safeCuts = cuts || [];
+
         let totalEarningsToday = 0;
         let totalCutsToday = 0;
         let totalEarningsWeek = 0;
         let totalCutsWeek = 0;
 
-        const sevenDaysAgo = now.getTime() - (7 * 24 * 60 * 60 * 1000);
+        const sevenDaysAgo = phTime.getTime() - (7 * 24 * 60 * 60 * 1000);
 
-        cuts.forEach(cut => {
-            // 🟢 FIXED MATH: (Base Price * Heads) + Stored VIP Charge + Tip
+        safeCuts.forEach(cut => {
             const basePrice = parseFloat(cut.services?.price_php || 0);
             const heads = cut.head_count || 1;
-            const vipFee = parseFloat(cut.vip_charge || 0); // Pulls the real 600 you mentioned
+            const vipFee = parseFloat(cut.vip_charge || 0); 
             const tip = parseFloat(cut.tip_amount || 0);
-            
             const profit = (basePrice * heads) + vipFee + tip;
 
-            const cutTime = new Date(cut.updated_at || cut.created_at).getTime();
+            // 🟢 FIX 3: Ensure comparison uses PH-adjusted timestamps
+            const cutTimeUTC = new Date(cut.updated_at || cut.created_at).getTime();
+            const cutTimePH = cutTimeUTC + (8 * 60 * 60 * 1000);
 
-            // Check if cut happened today
-            if (cutTime >= startOfToday) {
+            if (cutTimePH >= startOfToday) {
                 totalEarningsToday += profit;
                 totalCutsToday += heads; 
             }
 
-            // Check if cut happened in last 7 days
-            if (cutTime >= sevenDaysAgo) {
+            if (cutTimePH >= sevenDaysAgo) {
                 totalEarningsWeek += profit;
                 totalCutsWeek += heads;
             }
         });
+
+        // 🟢 FIX 4: Use safe reduction to prevent crashes
+        const allTimeHeads = safeCuts.reduce((sum, c) => sum + (c.head_count || 1), 0);
 
         res.json({
             totalEarningsToday,
             totalCutsToday,
             totalEarningsWeek,
             totalCutsWeek,
-            totalCutsAllTime: cuts.reduce((sum, c) => sum + (c.head_count || 1), 0),
+            totalCutsAllTime: allTimeHeads,
             carbonSavedToday: totalCutsToday * 150,
-            carbonSavedTotal: cuts.reduce((sum, c) => sum + (c.head_count || 1), 0) * 150
+            carbonSavedTotal: allTimeHeads * 150
         });
 
     } catch (err) {
