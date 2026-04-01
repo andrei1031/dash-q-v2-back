@@ -55,11 +55,19 @@ const startCronJobs = () => {
         console.log('[Cron] Checking for upcoming appointments...');
 
         const now = new Date();
-        // Look ahead 30 minutes
-        const lookAheadTime = new Date(now.getTime() + 30 * 60000);
         
-        // Look BEHIND 24 hours (Safety Net for "Missed" appointments)
-        const lookBehindTime = new Date(now.getTime() - 24 * 60 * 60 * 1000); 
+        // 🟢 FIX 1: Shift Server UTC to Philippine Time (+8 Hours)
+        const phTime = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+        
+        // Look ahead 30 minutes (in PH time)
+        const lookAheadTime = new Date(phTime.getTime() + 30 * 60000);
+        
+        // Look BEHIND 24 hours (in PH time)
+        const lookBehindTime = new Date(phTime.getTime() - 24 * 60 * 60 * 1000); 
+
+        // 🟢 FIX 2: Strip the .000Z to perfectly match the Naive string in Supabase
+        const lookAheadStr = lookAheadTime.toISOString().split('.')[0];
+        const lookBehindStr = lookBehindTime.toISOString().split('.')[0];
 
         try {
             // 1. Find confirmed appointments due soon (or slightly past due)
@@ -68,15 +76,14 @@ const startCronJobs = () => {
                 .select('*')
                 .in('status', ['confirmed']) 
                 .eq('is_converted_to_queue', false)
-                .lte('scheduled_time', lookAheadTime.toISOString()) // Starts before 30 mins from now
-                .gte('scheduled_time', lookBehindTime.toISOString()); // But not older than yesterday
+                .lte('scheduled_time', lookAheadStr) // Now comparing apples to apples
+                .gte('scheduled_time', lookBehindStr);
 
             if (dueAppointments && dueAppointments.length > 0) {
                 for (const appt of dueAppointments) {
-                    // ... (Keep the rest of the logic exactly the same) ...
+                    
                     console.log(`[Cron] Processing Appointment #${appt.id} for Barber ${appt.barber_id}...`);
                     
-                    // ... (Chair Check Logic) ...
                     const { data: activeQueue } = await supabase
                         .from('queue_entries')
                         .select('id, status')
@@ -84,7 +91,6 @@ const startCronJobs = () => {
                         .in('status', ['In Progress', 'Up Next']);
 
                     const personInChair = activeQueue.find(q => q.status === 'In Progress');
-                    const personUpNext = activeQueue.find(q => q.status === 'Up Next');
 
                     let initialStatus = 'Waiting';
 
@@ -95,8 +101,7 @@ const startCronJobs = () => {
                         console.log(`---> Chair taken. CLEARING WAY for Appointment #${appt.id}.`);
                         initialStatus = 'Up Next';
 
-                        // ☢️ NUCLEAR OPTION: Kick ANYONE currently in 'Up Next' back to 'Waiting'
-                        // This guarantees the slot is empty for the Appointment.
+                        // Kick ANYONE currently in 'Up Next' back to 'Waiting'
                         await supabase
                             .from('queue_entries')
                             .update({ status: 'Waiting' })
