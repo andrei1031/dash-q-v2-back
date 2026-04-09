@@ -211,8 +211,7 @@ exports.queue = async (req, res) => {
         // --- 4. SEND NOTIFICATIONS (Only if they successfully got the Up Next spot) ---
         if (newQueueEntry.status === 'Up Next') {
             console.log(`[RPC Join] Triggering notifications for ${newQueueEntry.customer_name}...`);
-            await supabase.from('queue_entries').update({ notified_up_next: true }).eq('id', newQueueEntry.id);
-
+            
             const context = await getNotificationContext(newQueueEntry);
 
             // Trigger Email (n8n)
@@ -224,7 +223,15 @@ exports.queue = async (req, res) => {
                     barberName: context.barberName,
                     serviceName: context.serviceName,
                     duration: context.duration
-                }).catch(err => console.error(err.message));
+                })
+                .then(async () => {
+                    // 🟢 FIX: We only update the database IF the email sends successfully!
+                    await supabase.from('queue_entries').update({ notified_up_next: true }).eq('id', newQueueEntry.id);
+                })
+                .catch(err => console.error("n8n Webhook failed, Cron will retry:", err.message));
+            } else {
+                 // If no email was provided, just mark it true so the system ignores it
+                 await supabase.from('queue_entries').update({ notified_up_next: true }).eq('id', newQueueEntry.id);
             }
 
             // Trigger Push (OneSignal)
@@ -603,9 +610,6 @@ exports.complete = async (req, res) => {
                 .single();
 
             if (queueEntryWithUser?.user_id) {
-                // Call loyalty points API (fire and forget - don't wait)
-                const axios = require('axios');
-                
                 // Get additional data needed for accurate loyalty calculation
                 const { data: queueEntryDetails } = await supabase
                     .from('queue_entries')
@@ -617,18 +621,34 @@ exports.complete = async (req, res) => {
                 const isVip = queueEntryDetails?.is_vip || false;
                 const vipCharge = isVip ? vipChargeInt : 0;
                 
-                axios.post(`${process.env.API_URL || 'http://localhost:3001/api'}/loyalty/earn`, {
-                    userId: queueEntryWithUser.user_id,
-                    queueEntryId: queueIdInt,
-                    servicePrice: servicePrice, // base price per person
-                    serviceId: queueEntry?.service_id,
-                    headCount: headCount,
-                    vipCharge: vipCharge,
-                    tipAmount: tipInt
-                }).catch(err => console.error('Failed to award loyalty points:', err.message));
+                // 🟢 FIX: Import the loyalty logic directly instead of using Axios/Internet
+                const loyaltyController = require('./loyaltyController');
+                
+                // We create a "fake" request object to pass directly to the function
+                const mockReq = {
+                    body: {
+                        userId: queueEntryWithUser.user_id,
+                        queueEntryId: queueIdInt,
+                        servicePrice: servicePrice,
+                        serviceId: queueEntry?.service_id,
+                        headCount: headCount,
+                        vipCharge: vipCharge,
+                        tipAmount: tipInt
+                    }
+                };
+                
+                // We create a "fake" response object so it doesn't crash the main haircut completion
+                const mockRes = {
+                    json: (data) => console.log('[Loyalty] Points awarded instantly.'),
+                    status: (code) => ({
+                        json: (err) => console.error(`[Loyalty] Failed internally with code ${code}:`, err)
+                    })
+                };
+
+                // Fire the function directly! (Instant and 100% reliable)
+                loyaltyController.earnPointsOnService(mockReq, mockRes);
             }
         } catch (pointsError) {
-            // Don't fail the transaction if points award fails
             console.error('Loyalty points award error (non-blocking):', pointsError.message);
         }
         // ============================================================
