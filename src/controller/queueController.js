@@ -3,12 +3,11 @@ const { supabase } = require("../database/supabase");
 const { createNotificationHelpers } = require("../utils/notifications");
 const { createQueueHelpers } = require("../utils/queueLogic");
 const setupVapid = require("../config/vapid");
-const webPush = setupVapid()
+const webPush = setupVapid();
 
-const { getNotificationContext, processUpNextNotification } = createNotificationHelpers({ supabase, webPush });
+const { getNotificationContext, processUpNextNotification, sendPushNotification } = createNotificationHelpers({ supabase, webPush });
 const { enforceQueueLogic } = createQueueHelpers(supabase);
 
-// Customer Confirms Attendance
 exports.confirm = async (req, res) => {
     const { queueId } = req.body;
 
@@ -32,13 +31,9 @@ exports.confirm = async (req, res) => {
     }
 }
 
-/**
- * ENDPOINT: Update Customer Location (Heartbeat)
- */
 exports.location = async (req, res) => {
     const { queueId, distance } = req.body;
 
-    // Silent failure is okay here (we don't want to crash the app if GPS fails)
     if (!queueId || distance === undefined) return res.sendStatus(400);
 
     try {
@@ -47,16 +42,13 @@ exports.location = async (req, res) => {
             .update({ current_distance_meters: Math.round(distance) })
             .eq('id', queueId);
 
-        res.sendStatus(200); // OK
+        res.sendStatus(200);
     } catch (error) {
         console.error("Loc update failed:", error.message);
         res.sendStatus(500);
     }
 }
 
-/**
- * ENDPOINT 2 (RPC): Add a customer and auto-assign status
- */
 exports.queue = async (req, res) => {
     const {
         customer_name, customer_phone, barber_id, reference_image_url,
@@ -74,7 +66,6 @@ exports.queue = async (req, res) => {
         return res.status(400).json({ error: 'Name, Barber ID, and Service ID are required.' });
     }
 
-    // --- 1. BLOCKING CHECK: Active Booking (user_id) ---
     if (user_id) {
         const { data: activeEntry, error: checkError } = await supabase
             .from('queue_entries')
@@ -87,7 +78,6 @@ exports.queue = async (req, res) => {
         if (activeEntry) return res.status(409).json({ error: 'You already have an active booking.', details: activeEntry });
     }
 
-    // --- 2. DUPLICATE NAME CHECK: Per barber ---
     const { data: duplicateName, error: dupError } = await supabase
         .from('queue_entries')
         .select('id')
@@ -105,7 +95,6 @@ exports.queue = async (req, res) => {
     }
 
     try {
-        // --- 2. JOIN QUEUE (Initially 'Waiting') ---
         const { data, error } = await supabase.rpc('join_queue_auto_assign', {
             p_customer_name: customer_name,
             p_barber_id: barberIdInt,
@@ -125,14 +114,8 @@ exports.queue = async (req, res) => {
         let newQueueEntry = Array.isArray(data) ? data[0] : data;
         if (!newQueueEntry) throw new Error('Database function did not return a new entry.');
 
-        // ============================================================
-        // 🔴 PRIORITY LOGIC START
-        // Hierarchy: Appointment > VIP > Regular (FCFS)
-        // ============================================================
-        
-        // A. Check for "Blocking" Appointments (e.g., within next 45 mins)
         const now = new Date();
-        const appointmentBuffer = new Date(now.getTime() + 45 * 60 * 1000); // 45 Minute lookahead
+        const appointmentBuffer = new Date(now.getTime() + 45 * 60 * 1000);
 
         const { data: upcomingAppt } = await supabase
             .from('appointments')
@@ -144,7 +127,6 @@ exports.queue = async (req, res) => {
             .lt('scheduled_time', appointmentBuffer.toISOString())
             .maybeSingle();
 
-        // Get current "Up Next" person (if any)
         const { data: currentUpNext } = await supabase
             .from('queue_entries')
             .select('id, is_vip, customer_name, status')
@@ -152,69 +134,40 @@ exports.queue = async (req, res) => {
             .eq('status', 'Up Next')
             .maybeSingle();
 
-        // --- SCENARIO 1: APPOINTMENT EXISTS ---
         if (upcomingAppt) {
-            console.log(`[Priority] Upcoming Appointment found at ${upcomingAppt.scheduled_time}. Blocking Up Next slot.`);
-            
-            // If someone is currently Up Next (VIP or Regular), DEMOTE them to save the spot for the Appointment
+            console.log(`[Priority] Upcoming Appointment found. Blocking Up Next slot.`);
             if (currentUpNext) {
-                console.log(`[Priority] Demoting ${currentUpNext.customer_name} (VIP: ${currentUpNext.is_vip}) to make room for Appointment.`);
                 await supabase
                     .from('queue_entries')
                     .update({ status: 'Waiting', notified_up_next: false })
                     .eq('id', currentUpNext.id);
             }
-            
-            // New user stays Waiting (do nothing).
         } 
-        
-        // --- SCENARIO 2: NO APPOINTMENT (Standard VIP Logic) ---
         else {
             if (!currentUpNext) {
-                // SLOT EMPTY: Anyone takes it
-                console.log(`[Priority] Slot empty. Promoting #${newQueueEntry.id} to Up Next.`);
                 const { data: updated } = await supabase.from('queue_entries').update({ status: 'Up Next' }).eq('id', newQueueEntry.id).select().single();
                 if (updated) newQueueEntry = updated;
             } 
             else {
-                // SLOT FULL: Check for VIP Bump
-                // Rule: New VIP bumps Old Regular. 
-                // Rule: New VIP does NOT bump Old VIP (FCFS).
-                // Rule: New Regular does NOT bump anyone.
-
                 if (!!is_vip && !currentUpNext.is_vip) {
-                    console.log(`[Priority] VIP BUMP! New VIP #${newQueueEntry.id} bumps Regular #${currentUpNext.id}`);
-                    
-                    // 1. Demote Regular
                     await supabase.from('queue_entries').update({ status: 'Waiting', notified_up_next: false }).eq('id', currentUpNext.id);
-                    
-                    // 2. Promote New VIP
                     const { data: updated } = await supabase.from('queue_entries').update({ status: 'Up Next' }).eq('id', newQueueEntry.id).select().single();
                     if (updated) newQueueEntry = updated;
-                } 
-                else if (!!is_vip && currentUpNext.is_vip) {
-                     console.log(`[Priority] VIP Conflict. Slot held by VIP #${currentUpNext.id}. New VIP #${newQueueEntry.id} waits (FCFS).`);
                 }
             }
         }
-        // ============================================================
-        // 🔴 PRIORITY LOGIC END
-        // ============================================================
 
-
-        // --- 3. HANDLE HEAD COUNT ---
         if (newQueueEntry && head_count > 1) {
             await supabase.from('queue_entries').update({ head_count: parseInt(head_count) }).eq('id', newQueueEntry.id);
             newQueueEntry.head_count = parseInt(head_count);
         }
 
-        // --- 4. SEND NOTIFICATIONS (Only if they successfully got the Up Next spot) ---
         if (newQueueEntry.status === 'Up Next') {
-            console.log(`[RPC Join] Triggering notifications for ${newQueueEntry.customer_name}...`);
+            console.log(`[RPC Join] Triggering double notifications for ${newQueueEntry.customer_name}...`);
             
-            const context = await getNotificationContext(newQueueEntry);
+            processUpNextNotification(newQueueEntry).catch(err => console.error("Web Push failed:", err.message));
 
-            // Trigger Email (n8n)
+            const context = await getNotificationContext(newQueueEntry);
             if (newQueueEntry.customer_email && process.env.N8N_WEBHOOK_URL && context) {
                 axios.post(process.env.N8N_WEBHOOK_URL, {
                     type: 'up_next',
@@ -225,28 +178,11 @@ exports.queue = async (req, res) => {
                     duration: context.duration
                 })
                 .then(async () => {
-                    // 🟢 FIX: We only update the database IF the email sends successfully!
                     await supabase.from('queue_entries').update({ notified_up_next: true }).eq('id', newQueueEntry.id);
                 })
-                .catch(err => console.error("n8n Webhook failed, Cron will retry:", err.message));
+                .catch(err => console.error("Email Webhook failed:", err.message));
             } else {
-                 // If no email was provided, just mark it true so the system ignores it
                  await supabase.from('queue_entries').update({ notified_up_next: true }).eq('id', newQueueEntry.id);
-            }
-
-            // Trigger Push (OneSignal)
-            if (newQueueEntry.player_id && process.env.ONESIGNAL_APP_ID && process.env.ONESIGNAL_REST_API_KEY) {
-                const pushContent = context ?
-                    `Hi ${newQueueEntry.customer_name}, you're Up Next for ${context.serviceName} with ${context.barberName}.` :
-                    `Hi ${newQueueEntry.customer_name}, you're Up Next!`;
-                
-                axios.post("https://api.onesignal.com/api/v1/notifications", {
-                    app_id: process.env.ONESIGNAL_APP_ID,
-                    include_player_ids: [newQueueEntry.player_id],
-                    headings: { "en": "You're next!" },
-                    contents: { "en": pushContent }
-                }, { headers: { "Authorization": `Basic ${process.env.ONESIGNAL_REST_API_KEY}`, "Content-Type": "application/json" } })
-                .catch(err => console.error(err.message));
             }
         }
 
@@ -258,21 +194,16 @@ exports.queue = async (req, res) => {
     }
 }
 
-/**
- * ENDPOINT (NEW): Update the reference image URL
- */
 exports.photo = async (req, res) => {
     const { queueId, barberId, referenceImageUrl } = req.body;
     const queueIdInt = parseInt(queueId);
     const barberIdInt = parseInt(barberId);
-    console.log(`PUT /api/queue/photo - Updating photo for queue ${queueIdInt} by barber ${barberIdInt}`);
 
     if (isNaN(queueIdInt) || isNaN(barberIdInt) || !referenceImageUrl) {
         return res.status(400).json({ error: 'Valid Queue ID, Barber ID, and Image URL are required.' });
     }
 
     try {
-        // 1. Check if the entry is still in an updatable state ('Waiting' or 'Up Next')
         const { data: entry, error: fetchError } = await supabase.from('queue_entries')
             .select('status, barber_id')
             .eq('id', queueIdInt)
@@ -282,10 +213,9 @@ exports.photo = async (req, res) => {
         if (fetchError) throw fetchError;
         if (!entry) return res.status(404).json({ error: 'Queue entry not found or invalid barber ID.' });
         if (entry.status !== 'Waiting' && entry.status !== 'Up Next') {
-            return res.status(403).json({ error: `Photo can only be updated when status is 'Waiting' or 'Up Next' (Current: ${entry.status}).` });
+            return res.status(403).json({ error: `Photo status forbidden.` });
         }
 
-        // 2. Perform the update
         const { data, error: updateError } = await supabase.from('queue_entries')
             .update({ reference_image_url: referenceImageUrl })
             .eq('id', queueIdInt)
@@ -293,20 +223,13 @@ exports.photo = async (req, res) => {
             .single();
 
         if (updateError) throw updateError;
-
-        console.log(`Successfully updated photo URL for queue ${queueIdInt}`);
         res.status(200).json(data);
-
     } catch (error) {
-        console.error('Error updating reference photo:', error.message);
-        res.status(500).json({ error: error.message || 'Server error updating photo.' });
+        console.error('Error updating photo:', error.message);
+        res.status(500).json({ error: 'Server error updating photo.' });
     }
 }
 
-/**
- * ENDPOINT 3.5 (UPDATED): Get full queue details for Barber Dashboard
- * Includes 'unread_count' for chat notification badges and 'nextAppointment' for Safety Gap.
- */
 exports.details = async (req, res) => {
     const { barberId } = req.params;
     const barberIdInt = parseInt(barberId);
@@ -314,7 +237,6 @@ exports.details = async (req, res) => {
     if (isNaN(barberIdInt)) return res.status(400).json({ error: "Invalid Barber ID" });
 
     try {
-        // 0. Fetch Barber's UUID (Required to filter out their own messages from unread count)
         const { data: bProfile } = await supabase
             .from('barber_profiles')
             .select('user_id')
@@ -323,237 +245,103 @@ exports.details = async (req, res) => {
 
         const barberUserId = bProfile?.user_id;
 
-        // --- HELPER: Fetch unread counts for a list of entries ---
         const fetchUnreadCounts = async (entries) => {
             if (!entries || entries.length === 0) return entries;
-            
             const entryIds = entries.map(e => e.id);
-            
-            // Query: Get messages in these queues that are NOT read
-            let query = supabase
-                .from('chat_messages')
-                .select('queue_entry_id, sender_id')
-                .in('queue_entry_id', entryIds)
-                .is('read_at', null);
-            
-            // Critical: Exclude messages sent by the barber themselves
-            if (barberUserId) {
-                query = query.neq('sender_id', barberUserId);
-            }
+            let query = supabase.from('chat_messages').select('queue_entry_id, sender_id').in('queue_entry_id', entryIds).is('read_at', null);
+            if (barberUserId) query = query.neq('sender_id', barberUserId);
 
             const { data: unreadMsgs, error } = await query;
+            if (error) return entries;
 
-            if (error) {
-                console.error("Error counting unread messages:", error);
-                return entries; // Return entries without counts if error occurs
-            }
-
-            // Map counts back to entries
             return entries.map(e => {
                 const count = unreadMsgs.filter(m => m.queue_entry_id === e.id).length;
                 return { ...e, unread_count: count };
             });
         };
 
-        // 1. Fetch WAITING list
-        const { data: waitingData, error: waitingError } = await supabase.from('queue_entries')
-            .select(`*, services(name, price_php), profiles(id), is_vip`)
-            .eq('barber_id', barberIdInt).eq('status', 'Waiting')
-            .order('is_vip', { ascending: false }).order('created_at', { ascending: true });
-
-        if (waitingError) throw waitingError;
-
-        // 2. Fetch IN PROGRESS
-        const { data: inProgressData, error: inProgressError } = await supabase.from('queue_entries')
-            .select(`*, services(name, price_php), profiles(id), is_vip`)
-            .eq('barber_id', barberIdInt).eq('status', 'In Progress')
-            .limit(1).maybeSingle();
-
-        if (inProgressError) throw inProgressError;
-
-        // 3. Fetch UP NEXT
-        const { data: upNextListData, error: upNextError } = await supabase.from('queue_entries')
-            .select(`*, services(name, price_php), profiles(id), is_vip`)
-            .eq('barber_id', barberIdInt).eq('status', 'Up Next')
-            .limit(1);
+        const { data: waitingData } = await supabase.from('queue_entries').select(`*, services(name, price_php), profiles(id), is_vip`).eq('barber_id', barberIdInt).eq('status', 'Waiting').order('is_vip', { ascending: false }).order('created_at', { ascending: true });
+        const { data: inProgressData } = await supabase.from('queue_entries').select(`*, services(name, price_php), profiles(id), is_vip`).eq('barber_id', barberIdInt).eq('status', 'In Progress').limit(1).maybeSingle();
+        const { data: upNextListData } = await supabase.from('queue_entries').select(`*, services(name, price_php), profiles(id), is_vip`).eq('barber_id', barberIdInt).eq('status', 'Up Next').limit(1);
         
-        if (upNextError) throw upNextError;
-
         const finalUpNext = (upNextListData && upNextListData.length > 0) ? upNextListData[0] : null;
 
-        // 4. Fetch Next Immediate Appointment (Safety Gap Warning)
         const now = new Date().toISOString();
-        const { data: nextAppt, error: apptError } = await supabase
-            .from('appointments')
-            .select('id, scheduled_time, customer_name, services(name, duration_minutes)')
-            .eq('barber_id', barberIdInt)
-            .eq('status', 'confirmed')
-            .eq('is_converted_to_queue', false)
-            .gt('scheduled_time', now)
-            .order('scheduled_time', { ascending: true })
-            .limit(1)
-            .maybeSingle();
+        const { data: nextAppt } = await supabase.from('appointments').select('id, scheduled_time, customer_name, services(name, duration_minutes)').eq('barber_id', barberIdInt).eq('status', 'confirmed').eq('is_converted_to_queue', false).gt('scheduled_time', now).order('scheduled_time', { ascending: true }).limit(1).maybeSingle();
 
-        if (apptError) throw apptError;
-
-        // 5. Apply Unread Counts to all lists
         const waitingWithCounts = await fetchUnreadCounts(waitingData || []);
-        
-        let inProgressWithCount = null;
-        if (inProgressData) {
-            const res = await fetchUnreadCounts([inProgressData]);
-            inProgressWithCount = res[0];
-        }
+        let inProgressWithCount = inProgressData ? (await fetchUnreadCounts([inProgressData]))[0] : null;
+        let upNextWithCount = finalUpNext ? (await fetchUnreadCounts([finalUpNext]))[0] : null;
 
-        let upNextWithCount = null;
-        if (finalUpNext) {
-            const res = await fetchUnreadCounts([finalUpNext]);
-            upNextWithCount = res[0];
-        }
-
-        // 6. Return compiled response
-        res.json({ 
-            waiting: waitingWithCounts, 
-            inProgress: inProgressWithCount, 
-            upNext: upNextWithCount,
-            nextAppointment: nextAppt 
-        });
-
+        res.json({ waiting: waitingWithCounts, inProgress: inProgressWithCount, upNext: upNextWithCount, nextAppointment: nextAppt });
     } catch (error) {
-        console.error('Error fetching detailed queue:', error.message);
         res.status(500).json({ error: 'Failed to fetch detailed queue' });
     }
 }
 
-/**
- * ENDPOINT 4 (v5 - RPC - ATOMIC): Call next customer
- * This is now much simpler and safer. It only does two things:
- * 1. Calls the RPC to move the target customer to "In Progress".
- * 2. Calls the NEW atomic RPC to promote the next waiting customer.
- */
 exports.next = async (req, res) => {
     const { queue_id, barber_id } = req.body;
     const barberIdInt = parseInt(barber_id);
     const queueIdInt = parseInt(queue_id);
-    console.log(`[RPC v5] /api/queue/next - Barber ${barberIdInt} calling ${queueIdInt}`);
 
-    if (isNaN(queueIdInt) || isNaN(barberIdInt)) {
-        return res.status(400).json({ error: 'Valid Queue ID and Barber ID are required.' });
-    }
+    if (isNaN(queueIdInt) || isNaN(barberIdInt)) return res.status(400).json({ error: 'ID required.' });
 
     try {
-        // --- STEP 1: Call the RPC to move customer to "In Progress" ---
-        const { data: rpcData, error: rpcError } = await supabase.rpc('call_next_customer', {
-            p_barber_id: barberIdInt,
-            p_queue_id: queueIdInt
-        });
-
-        if (rpcError) {
-            console.error('[RPC v5] Database function (call_next_customer) error:', rpcError.message);
-            return res.status(409).json({ error: rpcError.message });
-        }
+        const { data: rpcData, error: rpcError } = await supabase.rpc('call_next_customer', { p_barber_id: barberIdInt, p_queue_id: queueIdInt });
+        if (rpcError) return res.status(409).json({ error: rpcError.message });
 
         const inProgressCustomer = Array.isArray(rpcData) ? rpcData[0] : rpcData;
-        console.log('[RPC v5] Successfully set "In Progress":', inProgressCustomer?.id);
-
-        // --- STEP 2 (THE FIX): Call the new atomic function to fill the slot ---
         const promotedCustomers = await enforceQueueLogic(barberIdInt);
         const newUpNextCustomer = Array.isArray(promotedCustomers) ? promotedCustomers[0] : null;
 
-        // --- STEP 3: Send notifications for the *correct* 'Up Next' customer ---
         if (newUpNextCustomer) {
-            console.log(`[Instant] Triggering instant email for Queue #${newUpNextCustomer.id}`);
-            processUpNextNotification(newUpNextCustomer).catch(err => {
-                console.error("[Instant] Failed instant send (Cron will handle it):", err.message);
-            });
-
+            console.log(`[Instant] Triggering double notifications for Queue #${newUpNextCustomer.id}`);
+            
+            processUpNextNotification(newUpNextCustomer).catch(err => console.error("Web Push failed:", err.message));
 
             const context = await getNotificationContext(newUpNextCustomer);
-
             if (newUpNextCustomer.customer_email && process.env.N8N_WEBHOOK_URL && context) {
-                // MODIFIED PAYLOAD: Added full_name, serviceName, and duration
                 axios.post(process.env.N8N_WEBHOOK_URL, {
                     email: newUpNextCustomer.customer_email,
                     name: newUpNextCustomer.customer_name,
                     barberName: context.barberName,
                     serviceName: context.serviceName,
                     duration: context.duration
-                })
-                    .catch(webhookError => { console.error("[RPC v5] Error triggering n8n webhook:", webhookError.message); });
+                }).catch(err => console.error("Email Webhook failed:", err.message));
             }
-
-            if (newUpNextCustomer.player_id && process.env.ONESIGNAL_APP_ID && process.env.ONESIGNAL_REST_API_KEY) {
-                // MODIFIED PUSH MESSAGE: Enhanced content
-                const pushHeaders = { "Content-Type": "application/json; charset=utf-8", "Authorization": `Basic ${process.env.ONESIGNAL_REST_API_KEY}` };
-
-                const pushContent = context ?
-                    `Hi ${newUpNextCustomer.customer_name}, you're Up Next for the ${context.serviceName} cut with ${context.barberName}. Please head over!` :
-                    `Hi ${newUpNextCustomer.customer_name}, it's your turn. Please head over!`;
-
-                const pushData = {
-                    app_id: process.env.ONESIGNAL_APP_ID,
-                    include_player_ids: [newUpNextCustomer.player_id],
-                    headings: { "en": "You're next!" },
-                    contents: { "en": pushContent }
-                };
-                axios.post("https://api.onesignal.com/api/v1/notifications", pushData, { headers: pushHeaders })
-                    .catch(pushError => { console.error("[RPC v5] Error sending OneSignal Push:", pushError.response?.data || pushError.message); });
-            }
-        } else {
-            console.log("[RPC v5] auto_fill_up_next_v2 found no one to promote (or slot was full).");
         }
-
         res.json(inProgressCustomer || { message: "Update successful" });
     } catch (error) {
-        console.error("[RPC v5] Overall endpoint error:", error);
-        res.status(500).json({ error: "Server error calling next customer." });
+        res.status(500).json({ error: "Server error calling next." });
     }
 }
 
-/**
- * ENDPOINT 4.5 (RPC): Mark queue entry as Cancelled/No-Show
- */
 exports.cancel = async (req, res) => {
     const { queue_id, barber_id } = req.body;
     const barberIdInt = parseInt(barber_id);
     const queueIdInt = parseInt(queue_id);
-    console.log(`[RPC Cancel] PUT /api/queue/cancel - Barber ${barberIdInt} cancelling ${queueIdInt}`);
-    if (isNaN(queueIdInt) || isNaN(barberIdInt)) {
-        return res.status(400).json({ error: 'Valid Queue ID and Barber ID are required.' });
-    }
+
+    if (isNaN(queueIdInt) || isNaN(barberIdInt)) return res.status(400).json({ error: 'IDs required.' });
+
     try {
         const { data: nextCustomerData, error } = await supabase.rpc('mark_queue_entry_cancelled', { p_barber_id: barberIdInt, p_queue_id: queueIdInt });
-        if (error) { console.error('[RPC Cancel] Database function error:', error.message); return res.status(400).json({ error: error.message }); }
-        console.log('[RPC Cancel] Successfully cancelled entry. Next customer data (if any):', nextCustomerData);
+        if (error) return res.status(400).json({ error: error.message });
 
         const newUpNextCustomer = Array.isArray(nextCustomerData) ? nextCustomerData[0] : null;
         if (newUpNextCustomer) {
-            console.log(`[RPC Cancel] Triggering notifications for new Up Next: ${newUpNextCustomer.id}`);
+            processUpNextNotification(newUpNextCustomer).catch(err => console.error("Web Push failed:", err.message));
+
             if (newUpNextCustomer.customer_email && process.env.N8N_WEBHOOK_URL) {
                 axios.post(process.env.N8N_WEBHOOK_URL, { email: newUpNextCustomer.customer_email, name: newUpNextCustomer.customer_name })
-                    .catch(err => console.error("[RPC Cancel] Error n8n webhook:", err.message));
-            }
-            if (newUpNextCustomer.player_id && process.env.ONESIGNAL_APP_ID) {
-                axios.post("https://api.onesignal.com/api/v1/notifications", {
-                    app_id: process.env.ONESIGNAL_APP_ID,
-                    include_player_ids: [newUpNextCustomer.player_id],
-                    headings: { "en": "You're next!" },
-                    contents: { "en": `Hi ${newUpNextCustomer.customer_name}, it's your turn. Please head over!` },
-                }, { headers: { "Authorization": `Basic ${process.env.ONESIGNAL_REST_API_KEY}` } })
-                    .catch(err => console.error("[RPC Cancel] Error OneSignal push:", err.message));
+                    .catch(err => console.error("Email Webhook failed:", err.message));
             }
         }
-
-        res.json({ message: `Queue entry #${queueIdInt} cancelled.` });
+        res.json({ message: `Cancelled #${queueIdInt}.` });
     } catch (error) {
-        console.error("[RPC Cancel] Overall endpoint error:", error);
-        res.status(500).json({ error: "Server error cancelling queue entry." });
+        res.status(500).json({ error: "Server error cancelling." });
     }
 }
 
-/**
- * ENDPOINT 5: Mark a cut as "Done" and log the profit (MODIFIED for VIP)
- */
 exports.complete = async (req, res) => {
     const { queue_id, barber_id, tip_amount, vip_charge } = req.body;
     const barberIdInt = parseInt(barber_id);
@@ -561,275 +349,105 @@ exports.complete = async (req, res) => {
     const tipInt = parseInt(tip_amount) || 0;
     const vipChargeInt = parseInt(vip_charge) || 0;
 
-    if (isNaN(queueIdInt) || isNaN(barberIdInt) || tipInt < 0 || vipChargeInt < 0) {
-        return res.status(400).json({ error: 'Queue ID, Barber ID, and valid Tip/VIP amounts required.' });
-    }
+    if (isNaN(queueIdInt) || isNaN(barberIdInt)) return res.status(400).json({ error: 'IDs required.' });
 
     try {
-        const { data: queueEntry, error: fetchError } = await supabase.from('queue_entries').select('service_id, head_count, services(price_php)').eq('id', queueIdInt).maybeSingle();
-        if (fetchError || !queueEntry || !queueEntry.services || queueEntry.services.price_php == null) {
-            console.error("Failed to fetch service price for completion:", fetchError, queueEntry);
-            return res.status(500).json({ error: 'Failed to find service price for completion.' });
-        }
+        const { data: queueEntry } = await supabase.from('queue_entries').select('service_id, head_count, services(price_php)').eq('id', queueIdInt).maybeSingle();
         const servicePrice = parseFloat(queueEntry.services.price_php);
         const headCount = queueEntry.head_count || 1;
+        const totalProfit = (servicePrice * headCount) + tipInt + vipChargeInt;
 
-        // --- CRITICAL CHANGE: Add the VIP charge to the total profit ---
-        const baseTotal = servicePrice * headCount;
-        const totalProfit = baseTotal + tipInt + vipChargeInt;
+        await supabase.from('queue_entries').update({ status: 'Done', tip_amount: tipInt, vip_charge: vipChargeInt }).eq('id', queueIdInt).eq('status', 'In Progress');
+        const { data } = await supabase.from('services_completed').insert([{ barber_id: barberIdInt, price: totalProfit, head_count: headCount }]).select();
 
-        // 1. UPDATE QUEUE ENTRY: Mark as Done AND save the tip amount
-        const { error: updateError } = await supabase
-            .from('queue_entries')
-            .update({ 
-                status: 'Done', 
-                tip_amount: tipInt, // <--- CRITICAL: SAVES TIP TO HISTORY
-                vip_charge: vipChargeInt
-            })
-            .eq('id', queueIdInt)
-            .eq('status', 'In Progress');
-
-        if (updateError) { 
-            console.error('Error updating queue status:', updateError.message); 
-            return res.status(500).json({ error: updateError.message }); 
-        }
-
-        // Log the service with the total profit (Base + Tip + VIP)
-        const { data, error: insertError } = await supabase.from('services_completed').insert([{ barber_id: barberIdInt, price: totalProfit, head_count: headCount }]).select();
-        if (insertError) { console.error('Error logging service:', insertError.message); return res.status(500).json({ error: insertError.message }); }
-
-        // ============================================================
-        // 🎁 LOYALTY POINTS: Award points after service completion
-        // ============================================================
         try {
-            // Get user_id from the queue entry to award points
-            const { data: queueEntryWithUser } = await supabase
-                .from('queue_entries')
-                .select('user_id')
-                .eq('id', queueIdInt)
-                .single();
-
-            if (queueEntryWithUser?.user_id) {
-                // Get additional data needed for accurate loyalty calculation
-                const { data: queueEntryDetails } = await supabase
-                    .from('queue_entries')
-                    .select('head_count, is_vip')
-                    .eq('id', queueIdInt)
-                    .single();
-                
-                const headCount = queueEntryDetails?.head_count || 1;
-                const isVip = queueEntryDetails?.is_vip || false;
-                const vipCharge = isVip ? vipChargeInt : 0;
-                
-                // 🟢 FIX: Import the loyalty logic directly instead of using Axios/Internet
+            const { data: qeUser } = await supabase.from('queue_entries').select('user_id, head_count, is_vip').eq('id', queueIdInt).single();
+            if (qeUser?.user_id) {
                 const loyaltyController = require('./loyaltyController');
-                
-                // We create a "fake" request object to pass directly to the function
-                const mockReq = {
-                    body: {
-                        userId: queueEntryWithUser.user_id,
-                        queueEntryId: queueIdInt,
-                        servicePrice: servicePrice,
-                        serviceId: queueEntry?.service_id,
-                        headCount: headCount,
-                        vipCharge: vipCharge,
-                        tipAmount: tipInt
-                    }
-                };
-                
-                // We create a "fake" response object so it doesn't crash the main haircut completion
-                const mockRes = {
-                    json: (data) => console.log('[Loyalty] Points awarded instantly.'),
-                    status: (code) => ({
-                        json: (err) => console.error(`[Loyalty] Failed internally with code ${code}:`, err)
-                    })
-                };
-
-                // Fire the function directly! (Instant and 100% reliable)
+                const mockReq = { body: { userId: qeUser.user_id, queueEntryId: queueIdInt, servicePrice, serviceId: queueEntry?.service_id, headCount: qeUser.head_count, vipCharge: qeUser.is_vip ? vipChargeInt : 0, tipAmount: tipInt } };
+                const mockRes = { json: () => {}, status: () => ({ json: () => {} }) };
                 loyaltyController.earnPointsOnService(mockReq, mockRes);
             }
-        } catch (pointsError) {
-            console.error('Loyalty points award error (non-blocking):', pointsError.message);
-        }
-        // ============================================================
+        } catch (e) {}
 
-        console.log(`[Complete] Successfully logged service for ${queueIdInt}. Checking to auto-fill Up Next...`);
         const promotedCustomers = await enforceQueueLogic(barberIdInt);
         const newUpNextCustomer = Array.isArray(promotedCustomers) ? promotedCustomers[0] : null;
         if (newUpNextCustomer) {
-            console.log(`[Auto-fill] Promoted customer ${newUpNextCustomer.id} to Up Next. Triggering notifications.`);
+            processUpNextNotification(newUpNextCustomer).catch(err => console.error("Web Push failed:", err.message));
             if (newUpNextCustomer.customer_email && process.env.N8N_WEBHOOK_URL) {
-                console.log(`[Auto-fill] Firing n8n email webhook for ${newUpNextCustomer.customer_name}`);
                 axios.post(process.env.N8N_WEBHOOK_URL, { email: newUpNextCustomer.customer_email, name: newUpNextCustomer.customer_name })
-                    .catch(webhookError => { console.error("[Auto-fill] Error triggering n8n webhook:", webhookError.message); });
-            }
-            if (newUpNextCustomer.player_id && process.env.ONESIGNAL_APP_ID && process.env.ONESIGNAL_REST_API_KEY) {
-                console.log(`[Auto-fill] Sending OneSignal Push to ${newUpNextCustomer.player_id}`);
-                const pushHeaders = { "Content-Type": "application/json; charset=utf-8", "Authorization": `Basic ${process.env.ONESIGNAL_REST_API_KEY}` };
-                const pushData = { app_id: process.env.ONESIGNAL_APP_ID, include_player_ids: [newUpNextCustomer.player_id], headings: { "en": "You're next!" }, contents: { "en": `Hi ${newUpNextCustomer.customer_name}, it's your turn. Please head over!` } };
-                axios.post("https://api.onesignal.com/api/v1/notifications", pushData, { headers: pushHeaders })
-                    .catch(pushError => { console.error("[Auto-fill] Error sending OneSignal Push:", pushError.response?.data || pushError.message); });
+                    .catch(err => console.error("Email Webhook failed:", err.message));
             }
         }
-
-        console.log('Successfully logged service:', data);
         res.status(200).json(data[0]);
     } catch (error) {
-        console.error("Error in /api/queue/complete:", error.message);
-        res.status(500).json({ error: "Server error completing cut." });
+        res.status(500).json({ error: "Server error completing." });
     }
 }
 
-/**
- * ENDPOINT 7 (UPDATED): Get Public Queue View (With "Ghost Slots")
- * Merges Walk-ins and upcoming Appointments into one chronological list.
- */
 exports.public_barber = async (req, res) => {
     const { barberId } = req.params;
     const barberIdInt = parseInt(barberId);
-    console.log(`GET /api/queue/public/${barberIdInt} - Fetching public queue with Ghost Slots`);
-
-    if (isNaN(barberIdInt)) { return res.status(400).json({ error: 'Invalid Barber ID.' }); }
+    if (isNaN(barberIdInt)) return res.status(400).json({ error: 'Invalid ID.' });
 
     try {
-        // 1. Fetch Active Queue (Walk-ins)
-        const { data: queueData, error: queueError } = await supabase
-            .from('queue_entries')
-            .select(`
-                id, customer_name, status, created_at, updated_at, 
-                services(duration_minutes), reference_image_url, 
-                is_vip, head_count, is_confirmed,
-                user_id, barber_id
-            `)
-            .eq('barber_id', barberIdInt)
-            .in('status', ['Waiting', 'Up Next', 'In Progress'])
-            .order('is_vip', { ascending: false })
-            .order('created_at', { ascending: true });
+        const { data: queueData } = await supabase.from('queue_entries').select(`id, customer_name, status, created_at, updated_at, services(duration_minutes), reference_image_url, is_vip, head_count, is_confirmed, user_id, barber_id`).eq('barber_id', barberIdInt).in('status', ['Waiting', 'Up Next', 'In Progress']).order('is_vip', { ascending: false }).order('created_at', { ascending: true });
 
-        if (queueError) throw queueError;
-
-        // 2. Fetch Today's Appointments (Ghost Slots)
-        // We look for confirmed appointments that haven't been converted to queue entries yet.
         const now = new Date();
-        const PH_OFFSET = 8 * 60 * 60 * 1000; // 8 Hours in milliseconds
+        const PH_OFFSET = 8 * 60 * 60 * 1000;
         const nowPH = new Date(now.getTime() + PH_OFFSET);
-
-        // Set start to 00:00:00 PH time
-        const todayStart = new Date(nowPH);
-        todayStart.setUTCHours(0,0,0,0);
-        
-        // Set end to 23:59:59 PH time
-        const todayEnd = new Date(nowPH);
-        todayEnd.setUTCHours(23,59,59,999);
-
-        // Shift back to UTC ISO strings for the database query
+        const todayStart = new Date(nowPH); todayStart.setUTCHours(0,0,0,0);
+        const todayEnd = new Date(nowPH); todayEnd.setUTCHours(23,59,59,999);
         const startIso = new Date(todayStart.getTime() - PH_OFFSET).toISOString();
         const endIso = new Date(todayEnd.getTime() - PH_OFFSET).toISOString();
 
-        const { data: apptData, error: apptError } = await supabase
-            .from('appointments')
-            .select('id, scheduled_time, customer_name, status')
-            .eq('barber_id', barberIdInt)
-            .in('status', ['confirmed', 'pending'])
-            .eq('is_converted_to_queue', false)
-            .gte('scheduled_time', startIso) // Use shifted ISO
-            .lte('scheduled_time', endIso);  // Use shifted ISO
+        const { data: apptData } = await supabase.from('appointments').select('id, scheduled_time, customer_name, status').eq('barber_id', barberIdInt).in('status', ['confirmed', 'pending']).eq('is_converted_to_queue', false).gte('scheduled_time', startIso).lte('scheduled_time', endIso);
 
-        if (apptError) throw apptError;
-
-        // 3. Transform Appointments into "Ghost Objects"
         const ghostSlots = (apptData || []).map(appt => ({
-            id: `appt_${appt.id}`, // String ID to distinguish from integer queue IDs
-            customer_name: "Reserved Slot", // Mask name for privacy (optional)
+            id: `appt_${appt.id}`,
+            customer_name: "Reserved Slot",
             status: 'Reserved',
-            created_at: appt.scheduled_time, // Use schedule time for sorting
+            created_at: appt.scheduled_time,
             is_vip: false,
-            is_ghost: true, // Flag for frontend to render differently
+            is_ghost: true,
             display_time: new Date(appt.scheduled_time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
         }));
 
-        // 4. Merge Logic
-        // "In Progress" & "Up Next" always stay at the top.
         const active = queueData.filter(q => q.status !== 'Waiting');
         const waiting = queueData.filter(q => q.status === 'Waiting');
-        
-        // Combine Waiting Walk-ins + Ghost Slots
         const combinedWaiting = [...waiting, ...ghostSlots].sort((a, b) => {
-            // 1. Appointments/Reserved slots ALWAYS win if they are "Ghost" (Future) or "Confirmed" (Active)
             const aScore = (a.is_confirmed || a.status === 'Reserved') ? 2 : (a.is_vip ? 1 : 0);
             const bScore = (b.is_confirmed || b.status === 'Reserved') ? 2 : (b.is_vip ? 1 : 0);
-
-            if (aScore > bScore) return -1;
-            if (aScore < bScore) return 1;
-
-            // 2. Tie-breaker: Time
+            if (aScore !== bScore) return bScore - aScore;
             return new Date(a.created_at) - new Date(b.created_at);
         });
 
-        const finalQueue = [...active, ...combinedWaiting];
-
-        res.json(finalQueue);
+        res.json([...active, ...combinedWaiting]);
     } catch (error) {
-        console.error('Error fetching public queue:', error.message);
-        res.status(500).json({ error: 'Failed to fetch queue information.' });
+        res.status(500).json({ error: 'Failed info.' });
     }
 }
 
-/**
- * ENDPOINT 8 (SECURE): Remove a customer AND auto-promote next
- * (FIXED: Handles Ambiguity & Enforces VIP Logic)
- */
 exports.remove = async (req, res) => {
     const { queueId } = req.params;
     const { userId } = req.body || {}; 
     const queueIdInt = parseInt(queueId);
 
-    console.log(`DELETE /api/queue/${queueIdInt} - Request from user ${userId}`);
-
-    if (isNaN(queueIdInt)) return res.status(400).json({ error: 'Invalid Queue ID.' });
-    if (!userId) return res.status(401).json({ error: 'Authorization failed.' });
+    if (isNaN(queueIdInt) || !userId) return res.status(400).json({ error: 'Auth failed.' });
 
     try {
-        // 1. Verify Ownership
-        const { data: queueEntry, error: fetchError } = await supabase
-            .from('queue_entries')
-            .select('user_id, barber_id')
-            .eq('id', queueIdInt)
-            .in('status', ['Waiting', 'Up Next'])
-            .maybeSingle();
+        const { data: queueEntry } = await supabase.from('queue_entries').select('user_id, barber_id').eq('id', queueIdInt).in('status', ['Waiting', 'Up Next']).maybeSingle();
+        if (!queueEntry || queueEntry.user_id !== userId) return res.status(403).json({ error: 'Unauthorized.' });
 
-        if (fetchError) throw fetchError;
-        if (!queueEntry) return res.status(404).json({ message: 'Entry not found or already in progress.' });
-
-        if (queueEntry.user_id !== userId) {
-            return res.status(403).json({ error: 'Unauthorized.' });
-        }
-
-        // 2. Delete the Entry
-        const { error: deleteError } = await supabase
-            .from('queue_entries')
-            .delete()
-            .eq('id', queueIdInt);
-
-        if (deleteError) throw deleteError;
-
-        console.log(`[DELETE] Deleted entry ${queueIdInt}. Enforcing queue logic...`);
-
-        // 3. TRIGGER AUTOMATION (Fill the gap / Promote VIP)
-        // This replaces the old "auto_fill" code that had the "ambiguous" error
+        await supabase.from('queue_entries').delete().eq('id', queueIdInt);
         const promotedCustomers = await enforceQueueLogic(queueEntry.barber_id);
         const newUpNextCustomer = Array.isArray(promotedCustomers) ? promotedCustomers[0] : null;
 
-        // 4. Send Notifications if someone moved up
         if (newUpNextCustomer) {
-            console.log(`[DELETE] Auto-promoted ${newUpNextCustomer.customer_name} to Up Next.`);
-            processUpNextNotification(newUpNextCustomer); // Use the helper function
+            processUpNextNotification(newUpNextCustomer).catch(err => console.error("Web Push failed:", err.message));
         }
-
-        res.status(200).json({ message: 'Successfully left queue.' });
-
+        res.status(200).json({ message: 'Left queue.' });
     } catch (error) {
-        console.error('Error removing from queue:', error.message);
-        res.status(500).json({ error: 'Failed to remove from queue.' });
+        res.status(500).json({ error: 'Failed remove.' });
     }
 }
