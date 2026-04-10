@@ -29,3 +29,5 @@ const auth = async (req, res, next) => {
     res.status(401).json({ error: 'Authentication failed' });
   }
 };
+
+module.exports = { auth, adminAuth };
