@@ -1,38 +1,31 @@
+// src/middleware/auth.js
 const jwt = require('jsonwebtoken');
+const { supabase } = require("../database/supabase");
 
-const auth = (req, res, next) => {
+const auth = async (req, res, next) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');
-  
-  if (!token) {
-    return res.status(401).json({ error: 'No token, authorization denied' });
-  }
+  if (!token) return res.status(401).json({ error: 'No token provided' });
 
   try {
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret-dashq');
+    // 1. TRY GUEST TOKEN FIRST (Signed by your local secret)
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET); // REMOVED FALLBACK
+      req.user = decoded;
+      return next();
+    } catch (guestErr) {
+      // If not a guest token, proceed to check Supabase
+    }
+
+    // 2. TRY SUPABASE TOKEN (For registered Admins/Barbers)
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (error || !user) throw new Error('Invalid Supabase token');
+
+    // Fetch the role from the profiles table to attach to req.user
+    const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
     
-    // Attach user to req
-    req.user = decoded; // { sub: userId, role, is_guest, etc }
-    
+    req.user = { ...user, role: profile?.role || 'customer' };
     next();
   } catch (err) {
-    console.error('Token verify error:', err.message);
-    res.status(401).json({ error: 'Token invalid, access denied' });
+    res.status(401).json({ error: 'Authentication failed' });
   }
 };
-
-const adminAuth = (req, res, next) => {
-  auth(req, res, async (err) => {
-    if (err) return;
-    
-    const { user } = req;
-    if (!user || user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
-    
-    next();
-  });
-};
-
-module.exports = { auth, adminAuth };
-

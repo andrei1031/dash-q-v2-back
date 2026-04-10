@@ -10,46 +10,60 @@ const db = supabaseAdmin;
 
 const { enforceQueueLogic } = createQueueHelpers(supabaseAdmin);
 
-// POST /api/admin/next-customer
-// Body: { barberId: 5 }
+/**
+ * FEATURE: Admin "Force Next"
+ * Finds the next person for a specific barber and moves them to "In Progress".
+ */
 exports.next_customer = async (req, res) => {
     const { barberId } = req.body;
 
     try {
-        // 1. Find the current customer in the chair (status: 'serving') and finish them
-        await db.query(
-            "UPDATE queue SET status = 'completed' WHERE barber_id = $1 AND status = 'serving'",
-            [barberId]
-        );
+        // 1. Find the current customer in the chair and finish them
+        await db.from('queue_entries')
+            .update({ status: 'Done' })
+            .eq('barber_id', barberId)
+            .eq('status', 'In Progress');
 
-        // 2. Find the next person waiting
-        const nextCustomer = await db.query(
-            "SELECT * FROM queue WHERE barber_id = $1 AND status = 'waiting' ORDER BY id ASC LIMIT 1",
-            [barberId]
-        );
+        // 2. Find the next person waiting (Priority: VIP first, then by time)
+        const { data: nextCustomer, error: fetchError } = await db
+            .from('queue_entries')
+            .select('*')
+            .eq('barber_id', barberId)
+            .eq('status', 'Waiting')
+            .order('is_vip', { ascending: false })
+            .order('created_at', { ascending: true })
+            .limit(1)
+            .maybeSingle();
 
-        if (nextCustomer.rows.length === 0) {
+        if (fetchError) throw fetchError;
+
+        if (!nextCustomer) {
             return res.json({ message: "Queue is empty for this barber." });
         }
 
-        // 3. Update the next person to 'serving'
-        const customer = nextCustomer.rows[0];
-        await db.query("UPDATE queue SET status = 'serving' WHERE id = $1", [customer.id]);
-
-        // 4. TRIGGER N8N (Notify the customer)
-        // Note: We use the logic you already have, just triggering it manually here
-        await axios.post(process.env.N8N_WEBHOOK_URL, {
-            type: 'up_next', // Ensure your Switch node handles this!
-            email: customer.email,
-            name: customer.name,
-            barberName: `Admin for Barber ${barberId}` // Or fetch actual name
+        // 3. Update the next person to 'In Progress' using the RPC logic
+        const { error: rpcError } = await db.rpc('call_next_customer', {
+            p_barber_id: parseInt(barberId),
+            p_queue_id: nextCustomer.id
         });
 
-        res.json({ success: true, message: `Moved ${customer.name} to chair.` });
+        if (rpcError) throw rpcError;
+
+        // 4. Trigger Notification (Standard N8N logic)
+        if (nextCustomer.customer_email && process.env.N8N_WEBHOOK_URL) {
+            await axios.post(process.env.N8N_WEBHOOK_URL, {
+                type: 'up_next',
+                email: nextCustomer.customer_email,
+                name: nextCustomer.customer_name,
+                barberName: `Admin for Barber ${barberId}`
+            }).catch(e => console.warn("N8N Notification failed:", e.message));
+        }
+
+        res.json({ success: true, message: `Moved ${nextCustomer.customer_name} to chair.` });
 
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "Server error" });
+        console.error("Admin next_customer error:", err.message);
+        res.status(500).json({ error: "Server error: " + err.message });
     }
 };
 
@@ -930,27 +944,29 @@ exports.force_next = async (req, res) => {
 
 /**
  * ENDPOINT: Recalculate Loyalty Data for All Customers
- * This recalculates total_spent and total_visits from historical service records
+ * This recalculates total_spent and total_visits from historical records.
  */
 exports.recalculate_loyalty = async (req, res) => {
     const { userId } = req.body;
     
+    // Check Admin rights
     if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
 
     console.log("=== RECALCULATING LOYALTY DATA ===");
 
     try {
         // 1. Get all customers from auth
-        const { data: authUsers } = await supabaseAdmin.auth.admin.listUsers();
-        
-        // Get barber and admin user IDs to exclude
+        const { data: authUsers, error: authErr } = await supabaseAdmin.auth.admin.listUsers();
+        if (authErr) throw authErr;
+
+        // Get barber and admin user IDs to exclude from loyalty processing
         const { data: barberProfiles } = await db.from('barber_profiles').select('user_id');
         const { data: profiles } = await db.from('profiles').select('id, role');
         
         const barberUserIds = new Set((barberProfiles || []).map(b => b.user_id));
         const adminUserIds = new Set((profiles || []).filter(p => p.role === 'admin').map(p => p.id));
         
-        // Filter to only customers
+        // Filter to only registered customers
         const customerUsers = (authUsers?.users || []).filter(u => {
             if (barberUserIds.has(u.id)) return false;
             if (adminUserIds.has(u.id)) return false;
@@ -961,74 +977,59 @@ exports.recalculate_loyalty = async (req, res) => {
 
         console.log(`Found ${customerUsers.length} customers to process`);
 
-        // 2. For each customer, get their completed services and calculate totals
         let processed = 0;
         let errors = [];
 
+        // 2. Process each customer
         for (const customer of customerUsers) {
             try {
-                // Get all "Done" queue entries for this customer
+                // Fetch all successfully completed services for this user
                 const { data: completedEntries, error: entriesError } = await db
                     .from('queue_entries')
                     .select('id, head_count, tip_amount, services(price_php)')
                     .eq('user_id', customer.id)
                     .eq('status', 'Done');
 
-                if (entriesError) {
-                    console.error(`Error fetching entries for ${customer.id}:`, entriesError);
-                    continue;
-                }
+                if (entriesError) throw entriesError;
 
                 if (!completedEntries || completedEntries.length === 0) {
-                    // No completed services - ensure loyalty record exists with zeros
+                    // Reset loyalty for users with no history
                     await db.from('customer_loyalty').upsert({
                         user_id: customer.id,
                         total_spent: 0,
                         total_visits: 0,
                         total_points: 0,
                         lifetime_points: 0,
-                        current_tier: 'bronze'
+                        current_tier: 'bronze',
+                        updated_at: new Date().toISOString()
                     }, { onConflict: 'user_id' });
                     continue;
                 }
 
-                // Calculate totals
+                // Calculate fresh totals
                 let totalSpent = 0;
                 let totalVisits = 0;
-                let totalPoints = 0;
 
                 for (const entry of completedEntries) {
                     const headCount = entry.head_count || 1;
                     const tip = parseFloat(entry.tip_amount) || 0;
-                    
-                    // Get service price
                     const servicePrice = parseFloat(entry.services?.price_php) || 0;
                     
-                    // Calculate this entry's total
-                    const entryTotal = (servicePrice * headCount) + tip;
-                    
-                    totalSpent += entryTotal;
+                    totalSpent += (servicePrice * headCount) + tip;
                     totalVisits += headCount;
-                    
-                    // Calculate points (1 point per 10php spent)
-                    totalPoints += Math.floor(entryTotal / 10);
                 }
 
-                // Get current loyalty record if exists
-                const { data: existingLoyalty } = await db
-                    .from('customer_loyalty')
-                    .select('*')
-                    .eq('user_id', customer.id)
-                    .single();
+                // Points calculation: 1 point per 10 PHP spent
+                let totalPoints = Math.floor(totalSpent / 10);
 
-                // Determine tier
+                // Determine Loyalty Tier
                 let newTier = 'bronze';
                 if (totalPoints >= 3000) newTier = 'platinum';
                 else if (totalPoints >= 1500) newTier = 'gold';
                 else if (totalPoints >= 500) newTier = 'silver';
 
-                // Upsert loyalty record
-                await db.from('customer_loyalty').upsert({
+                // Update the database
+                const { error: upsertError } = await db.from('customer_loyalty').upsert({
                     user_id: customer.id,
                     total_spent: totalSpent,
                     total_visits: totalVisits,
@@ -1038,29 +1039,26 @@ exports.recalculate_loyalty = async (req, res) => {
                     updated_at: new Date().toISOString()
                 }, { onConflict: 'user_id' });
 
+                if (upsertError) throw upsertError;
+
                 processed++;
-                console.log(`Processed ${customer.email}: ${totalVisits} visits, ₱${totalSpent} spent, ${totalPoints} points`);
+                console.log(`Updated ${customer.email}: ₱${totalSpent} spent, ${totalPoints} points`);
 
             } catch (err) {
-                console.error(`Error processing customer ${customer.id}:`, err);
+                console.error(`Error processing ${customer.id}:`, err.message);
                 errors.push({ customerId: customer.id, error: err.message });
             }
         }
 
-        console.log(`=== RECALCULATION COMPLETE ===`);
-        console.log(`Processed: ${processed} customers`);
-        console.log(`Errors: ${errors.length}`);
-
         res.json({
             success: true,
-            message: `Recalculated loyalty data for ${processed} customers`,
-            processed: processed,
-            errors: errors
+            message: `Recalculated loyalty for ${processed} customers.`,
+            processed,
+            errors
         });
 
     } catch (error) {
-        console.error("Recalculation error:", error);
+        console.error("Recalculation failed:", error.message);
         res.status(500).json({ error: "Failed to recalculate loyalty: " + error.message });
     }
-}
-
+};
