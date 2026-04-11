@@ -3,13 +3,10 @@ const router = express.Router();
 
 const { 
     push_manual,
-    subscribe,
-    push
+    subscribe
 } = require('../controller/notificationController');
 
 router.post('/push-manual', push_manual);
 router.post('/subscribe', subscribe);
-router.post('/push', push);
 
 module.exports = router;
-    
