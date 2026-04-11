@@ -103,7 +103,7 @@ exports.signup = async (req, res) => {
 
         if (isBarber) {
             console.log(`Attempting to insert BARBER profile for user ${newUser.id}`);
-            const { data: barberProfileData, error: barberProfileError } = await supabase.from('barber_profiles').insert({ user_id: newUser.id, full_name: fullName, is_active: true, is_available: false }).select().single();
+            const { data: barberProfileData, error: barberProfileError } = await supabase.from('barber_profiles').insert({ user_id: newUser.id, full_name: fullName, is_active: true, is_available: false,average_score: 0, review_count: 0 }).select().single();
             if (barberProfileError) throw barberProfileError;
             console.log('Barber profile created:', barberProfileData);
         }
