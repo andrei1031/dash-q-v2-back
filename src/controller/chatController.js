@@ -1,10 +1,13 @@
 const { createNotificationHelpers } = require('../utils/notifications');
 const { supabase } = require("../database/supabase");
-const  setupVapid  = require('../config/vapid');
-const filter = require('../utils/profanity')
+const setupVapid = require('../config/vapid');
+const filter = require('../utils/profanity');
 const { isAdmin } = require('../utils/admin');
-const webPush = setupVapid()
 
+// Initialize webPush via your VAPID config
+const webPush = setupVapid();
+
+// Initialize the push notification helper
 const { sendPushNotification } = createNotificationHelpers({ supabase, webPush });
 
 /**
@@ -35,10 +38,6 @@ exports.send = async (req, res) => {
         if (error) throw error;
 
         // 3. TRIGGER PUSH NOTIFICATION
-        // We need to figure out who the "other person" is.
-        // If Sender == Customer, Notify Barber.
-        // If Sender == Barber, Notify Customer.
-        
         // A. Fetch Queue Entry to get Customer ID and Barber ID
         const { data: entry } = await supabase
             .from('queue_entries')
@@ -52,7 +51,7 @@ exports.send = async (req, res) => {
             // B. Determine Recipient
             if (senderId === entry.user_id) {
                 // Sender is Customer -> Notify Barber
-                // We need to look up the Barber's *User ID* from their Profile ID
+                // Look up the Barber's User ID from their Barber Profile ID
                 const { data: barber } = await supabase
                     .from('barber_profiles')
                     .select('user_id')
@@ -71,9 +70,8 @@ exports.send = async (req, res) => {
                 // Truncate long messages for the notification body
                 const body = message.length > 40 ? message.substring(0, 40) + '...' : message;
                 
-                // Helper function call (Must be defined in server.js)
-                // If you haven't defined it, check Step 4 of the VAPID plan.
-                sendPushNotification(recipientId, { 
+                // FIX: Added 'await' to ensure the push process completes
+                await sendPushNotification(recipientId, { 
                     title: title, 
                     body: body, 
                     url: '/' // Clicking opens the app
@@ -115,14 +113,13 @@ exports.read = async (req, res) => {
 };
 
 /**
- * FEATURE 2: Admin "Omni-Chat" - Get Active Chats
+ * FEATURE: Admin "Omni-Chat" - Get Active Chats
  * Returns list of active queue entries that have chat history, 
  * including unread message counts for the Admin.
  */
 exports.admin_active_chats = async (req, res) => {
     try {
-        // 1. Get all active queue entries (Waiting, Up Next, In Progress)
-        // We need the user_id to identify which messages are from the customer
+        // 1. Get all active queue entries
         const { data: entries, error } = await supabase
             .from('queue_entries')
             .select(`
@@ -131,8 +128,7 @@ exports.admin_active_chats = async (req, res) => {
                 status, 
                 barber_id,
                 user_id,
-                barber_profiles(full_name),
-                profiles(id, role)
+                barber_profiles(full_name)
             `)
             .in('status', ['Waiting', 'Up Next', 'In Progress'])
             .order('updated_at', { ascending: false });
@@ -142,37 +138,29 @@ exports.admin_active_chats = async (req, res) => {
             return res.status(500).json({ error: error.message });
         }
 
-        // If no entries, return empty array
         if (!entries || entries.length === 0) {
             return res.json([]);
         }
 
-        // 2. Filter & Count: Only return entries with messages
         const activeChats = [];
         
         for (const entry of entries) {
-            // A. Count TOTAL messages (to see if chat exists)
+            // Count TOTAL messages to see if chat exists
             const { count: totalCount, error: countError } = await supabase
                 .from('chat_messages')
                 .select('*', { count: 'exact', head: true })
                 .eq('queue_entry_id', entry.id);
 
-            if (countError) {
-                console.error(`Error counting messages for queue ${entry.id}`, countError);
-                continue;
-            }
+            if (countError) continue;
 
-            // If there are messages, we process this entry
             if (totalCount > 0) {
-                // B. Count UNREAD messages for Admin
-                // Logic: Count messages sent by the CUSTOMER (entry.user_id) that are NOT read.
-                // This ignores messages sent by the Barber or other Admins.
+                // Count UNREAD messages sent BY THE CUSTOMER for the Admin to see
                 const { count: unreadCount } = await supabase
                     .from('chat_messages')
                     .select('*', { count: 'exact', head: true })
                     .eq('queue_entry_id', entry.id)
-                    .eq('sender_id', entry.user_id) // Only count messages FROM the customer
-                    .is('read_at', null);           // That are not read
+                    .eq('sender_id', entry.user_id) 
+                    .is('read_at', null);
 
                 activeChats.push({ 
                     ...entry, 
@@ -188,12 +176,11 @@ exports.admin_active_chats = async (req, res) => {
         console.error("Admin Chats Error:", error);
         res.status(500).json({ error: error.message, activeChats: [] });
     }
-}
+};
 
 /**
- * FEATURE 2: Admin "Omni-Chat" - Send Reply
+ * FEATURE: Admin "Omni-Chat" - Send Reply
  * Admin sends a message into a specific queue entry chat.
- * Triggers Push Notification to the Customer.
  */
 exports.admin_chats_reply = async (req, res) => {
     const { adminId, queueId, message } = req.body;
@@ -204,7 +191,6 @@ exports.admin_chats_reply = async (req, res) => {
     }
 
     try {
-        // Tagging the message helps the Customer know it's support/admin
         const adminMessage = `[ADMIN]: ${message}`;
 
         // 2. DATABASE: Insert the message
@@ -216,10 +202,7 @@ exports.admin_chats_reply = async (req, res) => {
 
         if (error) throw error;
         
-        // 3. NOTIFICATION: Manually trigger Push Notification to Customer
-        // (The database insert updates the UI, but this wakes up the phone)
-        
-        // Fetch the queue entry to find the Customer's User ID
+        // 3. NOTIFICATION: Fetch customer ID and trigger Push
         const { data: entry } = await supabase
             .from('queue_entries')
             .select('user_id')
@@ -227,10 +210,10 @@ exports.admin_chats_reply = async (req, res) => {
             .single();
 
         if (entry && entry.user_id) {
-            // Send Push (Ensure sendPushNotification helper is defined in server.js)
-            sendPushNotification(entry.user_id, { 
+            // FIX: Added 'await' for reliability
+            await sendPushNotification(entry.user_id, { 
                 title: "Support Message", 
-                body: message, // Don't include [ADMIN] prefix in push to keep it clean
+                body: message, 
                 url: '/' 
             });
         }
@@ -241,4 +224,4 @@ exports.admin_chats_reply = async (req, res) => {
         console.error("Admin Reply Error:", error.message);
         res.status(500).json({ error: error.message });
     }
-}
+};
