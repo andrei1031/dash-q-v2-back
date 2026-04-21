@@ -1,5 +1,6 @@
 const cron = require('node-cron');
 const { supabase } = require('../database/supabase');
+const { processUpNextNotification } = require('../utils/notifications'); // FIX: Added missing import
 
 const startCronJobs = () => {
     console.log('🕒 Starting cron jobs...');

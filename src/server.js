@@ -1,26 +1,24 @@
-
 const http = require('http');
-const express = require('express')
-const bodyParser = require('body-parser');
+const express = require('express');
+const compression = require('compression');
 const barber = require('./config/barber');
 const { startCronJobs } = require('./cron');
 const cors = require('cors');
 
-
 // --- Configure our "tools" ---
 const app = express();
 const corsOptions = {
-    origin: ['https://dash-q-sigma.vercel.app', 'http://localhost:3000', 'https://dash-q-sigma.vercel.app'],
+    // FIX: Removed duplicate 'https://dash-q-sigma.vercel.app'
+    origin: ['https://dash-q-sigma.vercel.app', 'http://localhost:3000'],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
 };
 
+app.use(compression()); // FIX: Added compression for faster payload delivery
 app.use(cors(corsOptions));
 app.use(express.json());
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
+app.use(express.urlencoded({ extended: true })); // FIX: Removed redundant body-parser
 
 // example: log or sanity check (optional)
 console.log("🔐 Barber config loaded:", {
@@ -29,19 +27,18 @@ console.log("🔐 Barber config loaded:", {
 });
 
 // --- CRON: Process Upcoming Appointments (Smart Auto-Chair) ---
-
-startCronJobs()
+startCronJobs();
 
 // Auth middleware
 const { auth, adminAuth } = require('./middleware/auth');
 
 // API ENDPOINTS START
+// FIX: Removed duplicate route mounts. Standardized to one mount point per route.
 const home = require('./routes/homeRoutes');
 app.use('/api', home);
 
 const notificationRoutes = require('./routes/notificationRoutes');
-app.use('/api', notificationRoutes);
-app.use('/api/test', notificationRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 const authRoutes = require('./routes/authRoutes');
 app.use('/api', authRoutes);
@@ -53,11 +50,9 @@ const chatRoutes = require('./routes/chatRoutes');
 app.use('/api/chat', chatRoutes);
 
 const serviceRoutes = require('./routes/serviceRoutes');
-app.use('/api', serviceRoutes);
 app.use('/api/services', serviceRoutes);
 
 const barberRoutes = require('./routes/barberRoutes');
-app.use('/api', barberRoutes);
 app.use('/api/barbers', barberRoutes);
 
 const settingsRoutes = require('./routes/settingsRoutes');
@@ -77,7 +72,6 @@ app.use('/api/guest', guestRoutes);
 
 const queueRoutes = require('./routes/queueRoutes');
 app.use('/api/queue', queueRoutes);
-app.use('/api/queue/public', queueRoutes);
 
 const eventRoutes = require('./routes/eventRoutes');
 app.use('/api/missed-event', eventRoutes);
@@ -85,7 +79,6 @@ app.use('/api/missed-event', eventRoutes);
 const reportsRoutes = require('./routes/reportsRoutes');
 app.use('/api/reports', reportsRoutes);
 
-// 🟢 THE FIX: Mount customerRoutes EXACTLY ONCE at the root!
 const customerRoutes = require('./routes/customerRoutes');
 app.use('/api', customerRoutes);
 
@@ -97,15 +90,9 @@ app.use('/api/analytics', analyticsRoutes);
 
 const server = http.createServer(app);
 
-// --- API Endpoints ---
-
-
-[server.js] 
-
-
 // --- Start the server ---
-
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+// FIX: Changed app.listen to server.listen so socket/realtime servers can attach
+server.listen(PORT, () => {
     console.log(`Dash-Q Backend Server is running on port ${PORT}`);
 });
