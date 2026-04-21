@@ -50,10 +50,12 @@ const chatRoutes = require('./routes/chatRoutes');
 app.use('/api/chat', chatRoutes);
 
 const serviceRoutes = require('./routes/serviceRoutes');
-app.use('/api/services', serviceRoutes);
+app.use('/api', serviceRoutes); // <-- Changed back to /api
+app.use('/api/services', serviceRoutes); // Keep this just in case
 
 const barberRoutes = require('./routes/barberRoutes');
-app.use('/api/barbers', barberRoutes);
+app.use('/api', barberRoutes); // <-- Changed back to /api
+app.use('/api/barbers', barberRoutes); // Keep this just in case
 
 const settingsRoutes = require('./routes/settingsRoutes');
 app.use('/api', settingsRoutes);
