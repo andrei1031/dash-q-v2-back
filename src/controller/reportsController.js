@@ -116,20 +116,24 @@ exports.get_user_submitted_reports = async (req, res) => {
 
 // In src/controller/reportsController.js
 
+// In src/controller/reportsController.js
 exports.unban_user = async (req, res) => {
     const { userId } = req.params;
+
     try {
         const { data, error } = await supabase
             .from('profiles')
-            .update({ is_active: true, is_banned: false })
+            .update({ 
+                is_banned: false // ONLY flipping this switch
+            })
             .eq('id', userId)
             .select();
 
         if (error) throw error;
-        if (!data || data.length === 0) return res.status(404).json({ error: "User not found" });
-
-        res.status(200).json({ message: "User unbanned successfully" });
+        
+        res.status(200).json({ message: "User is no longer banned." });
     } catch (err) {
+        // This will help you see if Supabase still thinks 'is_active' is missing
         res.status(500).json({ error: err.message });
     }
 };
