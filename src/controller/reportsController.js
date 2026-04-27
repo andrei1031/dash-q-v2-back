@@ -113,3 +113,21 @@ exports.get_user_submitted_reports = async (req, res) => {
         res.status(500).json({ error: 'Failed to load reports.' });
     }
 }
+
+exports.unban_user = async (req, res) => {
+    const { userId } = req.params;
+
+    try {
+        const { error } = await supabase
+            .from('profiles')
+            .update({ is_active: true })
+            .eq('id', userId);
+
+        if (error) throw error;
+
+        res.status(200).json({ message: "User has been successfully unbanned." });
+    } catch (err) {
+        console.error("Unban error:", err);
+        res.status(500).json({ error: "Failed to unban user." });
+    }
+};
