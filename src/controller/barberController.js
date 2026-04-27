@@ -158,7 +158,7 @@ exports.barbers_status = async (req, res) => {
                 .eq('id', barber.user_id);
         }
 
-        res.json({ message: `Barber ${is_active ? 'activated' : 'deactivated'}.` });
+        res.json({ message: `Barber ${is_active ? 'activated & unbanned' : 'deactivated'}.` });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
