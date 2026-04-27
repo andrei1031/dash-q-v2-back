@@ -114,13 +114,18 @@ exports.get_user_submitted_reports = async (req, res) => {
     }
 }
 
+// In src/controller/reportsController.js
 exports.unban_user = async (req, res) => {
     const { userId } = req.params;
 
     try {
+        // We update BOTH flags to ensure the user can log in and join queues
         const { error } = await supabase
             .from('profiles')
-            .update({ is_active: true })
+            .update({ 
+                is_active: true, 
+                is_banned: false 
+            })
             .eq('id', userId);
 
         if (error) throw error;
