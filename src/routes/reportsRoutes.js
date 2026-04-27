@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { unban_user } = require('../controller/reportsController');
+const { unban_user, submit_reports, get_user_submitted_reports } = require('../controller/reportsController');
 
 const { 
     submit_reports,
@@ -10,10 +10,8 @@ const {
 } = require('../controller/reportsController');
 
 // Change '/reports' to '/'
-router.post('/', submit_reports); 
-router.put('/unban/:userId', unban_user);
-
-// Change '/reports/my/:userId' to '/my/:userId'
-router.get('/my/:userId', get_user_submitted_reports); 
+router.put('/unban/:userId', unban_user); 
+router.post('/', submit_reports);
+router.get('/my/:userId', get_user_submitted_reports);
 
 module.exports = router;

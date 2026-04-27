@@ -118,37 +118,18 @@ exports.get_user_submitted_reports = async (req, res) => {
 
 exports.unban_user = async (req, res) => {
     const { userId } = req.params;
-
     try {
-        console.log(`[Admin Action] Attempting to unban UUID: ${userId}`);
-
-        // Ensure we are sending exact Booleans
         const { data, error } = await supabase
             .from('profiles')
-            .update({ 
-                is_active: true, 
-                is_banned: false 
-            })
+            .update({ is_active: true, is_banned: false })
             .eq('id', userId)
-            .select(); // Select allows us to verify the change
+            .select();
 
-        if (error) {
-            console.error("Supabase Database Error:", error.message);
-            return res.status(400).json({ 
-                error: "Database rejected the update.", 
-                details: error.message 
-            });
-        }
+        if (error) throw error;
+        if (!data || data.length === 0) return res.status(404).json({ error: "User not found" });
 
-        if (!data || data.length === 0) {
-            return res.status(404).json({ error: "User profile not found in database." });
-        }
-
-        console.log(`[Admin Action] Success: User ${userId} is now active.`);
-        res.status(200).json({ message: "User has been successfully unbanned." });
-
+        res.status(200).json({ message: "User unbanned successfully" });
     } catch (err) {
-        console.error("Unban Server Crash:", err);
-        res.status(500).json({ error: "Failed to unban user due to a server error." });
+        res.status(500).json({ error: err.message });
     }
 };
