@@ -1062,3 +1062,36 @@ exports.recalculate_loyalty = async (req, res) => {
         res.status(500).json({ error: "Failed to recalculate loyalty: " + error.message });
     }
 };
+
+// In src/controller/adminController.js (or wherever your staff logic is)
+exports.toggle_barber_status = async (req, res) => {
+    const { barberId } = req.params;
+    const { status } = req.body; // Expects 'true' (activate) or 'false' (deactivate)
+
+    try {
+        console.log(`[Admin] Toggling barber ${barberId} to status: ${status}`);
+
+        // Update BOTH columns simultaneously
+        const { error } = await supabase
+            // NOTE: Change 'profiles' to 'barber_profiles' if your barbers are in a separate table
+            .from('profiles') 
+            .update({ 
+                is_active: status, 
+                is_available: status 
+            })
+            .eq('id', barberId);
+
+        if (error) {
+            console.error("Database error updating barber:", error);
+            return res.status(400).json({ error: "Database rejected the update." });
+        }
+
+        res.status(200).json({ 
+            message: `Barber successfully ${status ? 'Activated' : 'Deactivated'}.` 
+        });
+
+    } catch (err) {
+        console.error("Toggle Server Error:", err);
+        res.status(500).json({ error: "Failed to update barber status." });
+    }
+};

@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { toggle_barber_status } = require('../controller/adminController');
 
 
 const { 
@@ -46,6 +47,7 @@ router.get('/users', get_all_users);
 router.delete('/users/:targetId', remove_user);
 router.post('/force-next', force_next);
 router.post('/recalculate-loyalty', recalculate_loyalty);
+router.put('/staff/toggle/:barberId', toggle_barber_status);
 
 // Admin barbers routes
 router.get('/barbers', fetchAllBarbers);
