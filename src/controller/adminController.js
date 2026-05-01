@@ -1063,27 +1063,26 @@ exports.recalculate_loyalty = async (req, res) => {
     }
 };
 
-// In src/controller/adminController.js (or wherever your staff logic is)
 exports.toggle_barber_status = async (req, res) => {
     const { barberId } = req.params;
-    const { status } = req.body; // Expects 'true' (activate) or 'false' (deactivate)
+    const { status } = req.body; 
 
     try {
-        console.log(`[Admin] Toggling barber ${barberId} to status: ${status}`);
+        console.log(`[Admin] Toggling barber ${barberId} in barber_profile to: ${status}`);
 
-        // Update BOTH columns simultaneously
+        // Update BOTH columns in the single barber_profile table
         const { error } = await supabase
-            // NOTE: Change 'profiles' to 'barber_profiles' if your barbers are in a separate table
-            .from('profiles') 
+            .from('barber_profile') 
             .update({ 
-                is_active: status, 
-                is_available: status 
+                is_active: status,
+                is_available: status
             })
-            .eq('id', barberId);
+            // IMPORTANT: If your foreign key column is named 'user_id', change 'id' below to 'user_id'
+            .eq('id', barberId); 
 
         if (error) {
-            console.error("Database error updating barber:", error);
-            return res.status(400).json({ error: "Database rejected the update." });
+            console.error("Error updating barber_profile:", error);
+            return res.status(400).json({ error: "Failed to update barber status." });
         }
 
         res.status(200).json({ 
@@ -1092,6 +1091,6 @@ exports.toggle_barber_status = async (req, res) => {
 
     } catch (err) {
         console.error("Toggle Server Error:", err);
-        res.status(500).json({ error: "Failed to update barber status." });
+        res.status(500).json({ error: "Internal server error during toggle." });
     }
 };
