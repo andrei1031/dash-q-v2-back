@@ -1072,7 +1072,7 @@ exports.toggle_barber_status = async (req, res) => {
 
         // Update BOTH columns in the single barber_profile table
         const { error } = await supabase
-            .from('barber_profile') 
+            .from('barber_profiles') 
             .update({ 
                 is_active: status,
                 is_available: status
