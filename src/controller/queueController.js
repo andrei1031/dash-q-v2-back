@@ -7,6 +7,7 @@ const webPush = setupVapid();
 
 const { getNotificationContext, processUpNextNotification, sendPushNotification } = createNotificationHelpers({ supabase, webPush });
 const { enforceQueueLogic } = createQueueHelpers(supabase);
+const { sendPushNotification } = require('../utils/notifications');
 
 // --- 1. ATTENDANCE CONFIRMATION ---
 exports.confirm = async (req, res) => {
@@ -261,3 +262,49 @@ exports.remove = async (req, res) => {
         res.status(500).json({ error: 'Remove failed.' });
     }
 }
+
+exports.pingCustomer = async (req, res) => {
+    const { queueId, barberId } = req.body;
+
+    if (!queueId) {
+        return res.status(400).json({ error: 'Queue ID is required' });
+    }
+
+    try {
+        // 1. Find the customer in the database
+        const { data: entry, error } = await supabase
+            .from('queue_entries')
+            .select('user_id, customer_name, status')
+            .eq('id', queueId)
+            .single();
+
+        if (error || !entry) {
+            return res.status(404).json({ error: 'Queue entry not found' });
+        }
+
+        // 2. If the user is registered (has a user_id), send the Web Push Notification
+        if (entry.user_id) {
+            // Call the function from your src/utils/notifications.js file
+            // You may need to adjust the exact function name based on your utils file
+            /* 
+            await sendPushNotification(entry.user_id, {
+                title: "🔔 Wake up! It's your turn!",
+                body: `Hey ${entry.customer_name}, your barber is waiting for you!`,
+                icon: '/logo192.png'
+            });
+            */
+        }
+
+        // 3. Force a timestamp update to trigger Supabase Realtime for guests
+        // This ensures the frontend registers a change even if they aren't using push notifications
+        await supabase
+            .from('queue_entries')
+            .update({ updated_at: new Date().toISOString() })
+            .eq('id', queueId);
+
+        res.status(200).json({ message: 'Ping sent successfully' });
+    } catch (error) {
+        console.error("Ping Error:", error);
+        res.status(500).json({ error: 'Failed to send ping' });
+    }
+};

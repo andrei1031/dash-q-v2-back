@@ -28,6 +28,7 @@ router.put('/next', next);
 router.put('/cancel', cancel);
 router.post('/complete', complete);
 router.get('/public/:barberId', public_barber);
+router.post('/ping', queueController.pingCustomer);
 
 // FIX 2: Change '/queue/:queueId' to '/:queueId' so it becomes DELETE /api/queue/:queueId
 router.delete('/:queueId', remove); 
