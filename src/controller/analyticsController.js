@@ -37,12 +37,21 @@ exports.get_analytics = async (req, res) => {
         let totalEarningsWeek = 0;
         let totalCutsWeek = 0;
         let daysMap = {};
+        
+        // --- NEW: Track unique days where at least 1 cut occurred ---
+        const uniqueWorkingDays = new Set(); 
 
         // Process Counts & Busiest Day (from queue_entries)
         safeCuts.forEach(cut => {
             const heads = cut.head_count || 1;
             const cutTimeUTC = new Date(cut.updated_at || cut.created_at).getTime();
             const cutTimePH = cutTimeUTC + (8 * 60 * 60 * 1000);
+
+            // --- NEW: Add the PH Date string to our Set to track unique days ---
+            const dateObjPH = new Date(cutTimePH);
+            const dateString = `${dateObjPH.getFullYear()}-${dateObjPH.getMonth() + 1}-${dateObjPH.getDate()}`;
+            uniqueWorkingDays.add(dateString);
+            // ------------------------------------------------------------------
 
             if (cutTimePH >= startOfToday) {
                 totalCutsToday += heads; 
@@ -88,8 +97,9 @@ exports.get_analytics = async (req, res) => {
             totalCutsWeek,
             totalCutsAllTime: allTimeHeads,
             busiestDay, 
-            carbonSavedToday: totalCutsToday * 150,
-            carbonSavedTotal: allTimeHeads * 150
+            // --- NEW: Carbon logic calculates based on unique days ---
+            carbonSavedToday: totalCutsToday > 0 ? 150 : 0,
+            carbonSavedTotal: uniqueWorkingDays.size * 150
         });
 
     } catch (err) {
