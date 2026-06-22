@@ -7,7 +7,6 @@ const webPush = setupVapid();
 
 const { getNotificationContext, processUpNextNotification, sendPushNotification } = createNotificationHelpers({ supabase, webPush });
 const { enforceQueueLogic } = createQueueHelpers(supabase);
-const { sendPushNotification } = require('../utils/notifications');
 
 // --- 1. ATTENDANCE CONFIRMATION ---
 exports.confirm = async (req, res) => {
