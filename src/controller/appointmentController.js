@@ -302,3 +302,144 @@ exports.process_appointments = async (req, res) => {
         res.json({ success: true, processed: results });
     } catch (e) { res.json({ error: e.message }); }
 }
+
+// Paste this at the bottom of src/controller/appointmentController.js
+
+exports.cancelAppointment = async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const { data, error } = await supabase
+            .from('appointments')
+            .update({ status: 'cancelled' }) // Lowercase 'cancelled' to match your frontend checks
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        // Safely check for webhook to prevent server crashes
+        if (process.env.N8N_WEBHOOK_URL) {
+            axios.post(process.env.N8N_WEBHOOK_URL, {
+                event: 'CANCELED',
+                appointment: data,
+                timestamp: new Date().toISOString()
+            }).catch(e => console.log("Webhook skipped"));
+        }
+
+        res.status(200).json({ message: 'Appointment canceled successfully', data });
+    } catch (error) {
+        console.error("Backend Cancel Error:", error);
+        res.status(500).json({ error: error.message || "Database update failed" });
+    }
+};
+
+exports.editAppointment = async (req, res) => {
+    const { id } = req.params;
+    const { scheduled_time, service_id } = req.body;
+
+    try {
+        if (!scheduled_time || !service_id) {
+            return res.status(400).json({ error: "Missing time or service selection." });
+        }
+
+        // Calculate new end_time
+        const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', service_id).single();
+        const duration = service?.duration_minutes || 30;
+
+        let cleanTime = scheduled_time.split('.')[0].split('+')[0]; 
+        if (cleanTime.endsWith('Z')) cleanTime = cleanTime.slice(0, -1);
+
+        const datePart = cleanTime.split('T')[0];
+        const timePart = cleanTime.split('T')[1];
+        
+        const startMins = parseInt(timePart.split(':')[0]) * 60 + parseInt(timePart.split(':')[1]);
+        const endMins = startMins + duration;
+        
+        // formatTime is declared at the top of your controller file
+        const end_time = `${datePart}T${formatTime(endMins)}`;
+
+        const { data, error } = await supabase
+            .from('appointments')
+            .update({ 
+                scheduled_time: cleanTime, 
+                end_time: end_time,
+                service_id: service_id, 
+                status: 'pending' // Send back to pending for barber approval
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        // Safely check for webhook
+        if (process.env.N8N_WEBHOOK_URL) {
+            axios.post(process.env.N8N_WEBHOOK_URL, {
+                event: 'RESCHEDULED',
+                appointment: data,
+                timestamp: new Date().toISOString()
+            }).catch(e => console.log("Webhook skipped"));
+        }
+
+        res.status(200).json({ message: 'Appointment updated successfully', data });
+    } catch (error) {
+        console.error("Backend Edit Error:", error);
+        res.status(500).json({ error: error.message || "Database update failed" });
+    }
+};
+
+exports.editAppointment = async (req, res) => {
+    const { id } = req.params;
+    const { scheduled_time, service_id } = req.body;
+
+    try {
+        if (!scheduled_time || !service_id) {
+            return res.status(400).json({ error: "Missing time or service selection." });
+        }
+
+        // Calculate new end_time
+        const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', service_id).single();
+        const duration = service?.duration_minutes || 30;
+
+        let cleanTime = scheduled_time.split('.')[0].split('+')[0]; 
+        if (cleanTime.endsWith('Z')) cleanTime = cleanTime.slice(0, -1);
+
+        const datePart = cleanTime.split('T')[0];
+        const timePart = cleanTime.split('T')[1];
+        
+        const startMins = parseInt(timePart.split(':')[0]) * 60 + parseInt(timePart.split(':')[1]);
+        const endMins = startMins + duration;
+        
+        // formatTime is declared at the top of your controller file
+        const end_time = `${datePart}T${formatTime(endMins)}`;
+
+        const { data, error } = await supabase
+            .from('appointments')
+            .update({ 
+                scheduled_time: cleanTime, 
+                end_time: end_time,
+                service_id: service_id, 
+                status: 'pending' // Send back to pending for barber approval
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        // Safely check for webhook
+        if (process.env.N8N_WEBHOOK_URL) {
+            axios.post(process.env.N8N_WEBHOOK_URL, {
+                event: 'RESCHEDULED',
+                appointment: data,
+                timestamp: new Date().toISOString()
+            }).catch(e => console.log("Webhook skipped"));
+        }
+
+        res.status(200).json({ message: 'Appointment updated successfully', data });
+    } catch (error) {
+        console.error("Backend Edit Error:", error);
+        res.status(500).json({ error: error.message || "Database update failed" });
+    }
+};
