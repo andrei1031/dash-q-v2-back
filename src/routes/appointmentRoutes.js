@@ -19,6 +19,8 @@ router.post('/book', book);
 router.put('/reject', reject);
 router.put('/approve', approve);
 router.get('/my/:userId', get_customer_appointments);
+router.put('/cancel/:id', cancelAppointment);
+router.put('/edit/:id', editAppointment);
 
 // FIX 1: Change '/appointments/barber/:barberId' to '/barber/:barberId'
 router.get('/barber/:barberId', get_barber_appointments);

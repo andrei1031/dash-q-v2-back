@@ -88,6 +88,7 @@ app.use('/api', customerRoutes);
 const analyticsRoutes = require('./routes/analyticsRoutes');
 app.use('/api/analytics', analyticsRoutes);
 
+
 // API ENDPOINTS END
 
 const server = http.createServer(app);
