@@ -365,3 +365,82 @@ exports.process_appointments = async (req, res) => {
         res.json({ success: true, processed: results });
     } catch (e) { res.json({ error: e.message }); }
 }
+exports.cancelAppointment = async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const { data, error } = await supabase
+            .from('appointments')
+            .update({ status: 'cancelled' }) // Ensure this matches your DB status (cancelled/Canceled)
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        // Optional: Trigger n8n webhook here if configured
+        if (process.env.N8N_WEBHOOK_URL) {
+            axios.post(process.env.N8N_WEBHOOK_URL, {
+                event: 'CANCELED',
+                appointment: data,
+                timestamp: new Date().toISOString()
+            }).catch(e => console.error("n8n error:", e.message));
+        }
+
+        res.status(200).json({ message: 'Appointment canceled successfully', data });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+/**
+ * ENDPOINT: Edit/Reschedule Appointment
+ */
+exports.editAppointment = async (req, res) => {
+    const { id } = req.params;
+    const { scheduled_time, service_id } = req.body;
+
+    try {
+        // Need to calculate new end_time
+        const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', service_id).single();
+        const duration = service?.duration_minutes || 30;
+
+        let cleanTime = scheduled_time.split('.')[0].split('+')[0]; 
+        if (cleanTime.endsWith('Z')) cleanTime = cleanTime.slice(0, -1);
+
+        const datePart = cleanTime.split('T')[0];
+        const timePart = cleanTime.split('T')[1];
+        
+        const startMins = parseInt(timePart.split(':')[0]) * 60 + parseInt(timePart.split(':')[1]);
+        const endMins = startMins + duration;
+        
+        const end_time = `${datePart}T${formatTime(endMins)}`;
+
+        const { data, error } = await supabase
+            .from('appointments')
+            .update({ 
+                scheduled_time: cleanTime, 
+                end_time: end_time,
+                service_id, 
+                status: 'pending' // Revert to pending for barber to approve
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        // Optional: Trigger n8n webhook here
+        if (process.env.N8N_WEBHOOK_URL) {
+            axios.post(process.env.N8N_WEBHOOK_URL, {
+                event: 'RESCHEDULED',
+                appointment: data,
+                timestamp: new Date().toISOString()
+            }).catch(e => console.error("n8n error:", e.message));
+        }
+
+        res.status(200).json({ message: 'Appointment updated successfully', data });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
