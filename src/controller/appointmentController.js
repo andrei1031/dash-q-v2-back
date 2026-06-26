@@ -21,28 +21,18 @@ const getFormattedTime = (naiveString) => {
     return `${String(hours).padStart(2, '0')}:${mins} ${ampm}`;
 };
 
-/**
- * ENDPOINT: "Naive Time" Smart Slots
- * Completely ignores UTC. Calculates directly in literal Philippines time.
- */
 exports.slots = async (req, res) => {
     const { barberId, date, serviceId } = req.query;
     if (!barberId || !date || !serviceId) return res.status(400).json({ error: 'Missing parameters' });
-
     try {
         const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', serviceId).single();
         const duration = service?.duration_minutes || 30;
-
-        // Get current real PH time
         const now = new Date();
         const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
         const todayStr = `${nowPH.getUTCFullYear()}-${String(nowPH.getUTCMonth()+1).padStart(2,'0')}-${String(nowPH.getUTCDate()).padStart(2,'0')}`;
         const currentPHMinutes = nowPH.getUTCHours() * 60 + nowPH.getUTCMinutes();
-
-        let currentMinutes = 10 * 60 + 30; // 10:30 AM
-        const closeMinutes = 19 * 60; // 7:00 PM
-
-        // Query database using literal string matching
+        let currentMinutes = 10 * 60 + 30; 
+        const closeMinutes = 19 * 60; 
         const { data: bookings } = await supabase
             .from('appointments')
             .select('scheduled_time, end_time')
@@ -50,213 +40,95 @@ exports.slots = async (req, res) => {
             .in('status', ['confirmed', 'pending'])
             .gte('scheduled_time', `${date}T00:00:00`)
             .lte('scheduled_time', `${date}T23:59:59`);
-
         let slots = [];
-
         while (currentMinutes + duration <= closeMinutes) {
-            // Block past slots if booking for today
             if (date === todayStr && currentMinutes <= currentPHMinutes) {
                 currentMinutes += 30;
                 continue;
             }
-
             const slotStart = currentMinutes;
             const slotEnd = currentMinutes + duration;
-
-            // Check if slot overlaps with existing bookings
             const isTaken = bookings?.some(b => {
                 const bTime = b.scheduled_time.split('T')[1]; 
                 const bStartMin = parseInt(bTime.split(':')[0]) * 60 + parseInt(bTime.split(':')[1]);
-                
                 const eTime = b.end_time.split('T')[1]; 
                 const bEndMin = parseInt(eTime.split(':')[0]) * 60 + parseInt(eTime.split(':')[1]);
-                
                 return (slotStart < bEndMin && slotEnd > bStartMin);
             });
-
-            if (!isTaken) {
-                // Sends literal string like "2026-04-01T11:00:00"
-                slots.push(`${date}T${formatTime(currentMinutes)}`);
-            }
-
+            if (!isTaken) slots.push(`${date}T${formatTime(currentMinutes)}`);
             currentMinutes += 30;
         }
-
         res.json(slots);
-
-    } catch (error) {
-        console.error("Slot fetch error:", error);
-        res.status(500).json({ error: 'Server error calculating slots' });
-    }
+    } catch (error) { res.status(500).json({ error: 'Server error' }); }
 };
 
-/**
- * ENDPOINT: Book an Appointment (NAIVE TIME)
- */
 exports.book = async (req, res) => {
     const { customer_name, customer_email, user_id, barber_id, service_id, scheduled_time } = req.body;
-    
-    // Clean whatever the frontend sends down to a literal "YYYY-MM-DDTHH:MM:SS"
     let cleanTime = scheduled_time.split('.')[0].split('+')[0]; 
     if (cleanTime.endsWith('Z')) cleanTime = cleanTime.slice(0, -1);
-
     try {
         const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', service_id).single();
         const duration = service?.duration_minutes || 30;
-
         const datePart = cleanTime.split('T')[0];
         const timePart = cleanTime.split('T')[1];
-        
         const startMins = parseInt(timePart.split(':')[0]) * 60 + parseInt(timePart.split(':')[1]);
         const endMins = startMins + duration;
-        
-        // The exact literal time it will end
         const end_time = `${datePart}T${formatTime(endMins)}`;
-
-        // Strict String comparison for conflicts
-        const { data: conflict } = await supabase
-            .from('appointments')
-            .select('id')
-            .eq('barber_id', barber_id)
-            .in('status', ['confirmed', 'pending'])
-            .lt('scheduled_time', end_time)
-            .gt('end_time', cleanTime)
-            .maybeSingle();
-
-        if (conflict) {
-            return res.status(409).json({ error: 'Slot is pending approval or taken. Please choose another.' });
-        }
-
-        // Insert exactly the literal strings into Supabase
+        const { data: conflict } = await supabase.from('appointments').select('id').eq('barber_id', barber_id).in('status', ['confirmed', 'pending']).lt('scheduled_time', end_time).gt('end_time', cleanTime).maybeSingle();
+        if (conflict) return res.status(409).json({ error: 'Slot taken.' });
         const { data, error } = await supabase.from('appointments').insert({
-            customer_name,
-            customer_email,
-            user_id,
-            barber_id,
-            service_id,
-            scheduled_time: cleanTime, // Supabase will save EXACTLY 11:00:00
-            end_time: end_time,        // Supabase will save EXACTLY 11:30:00
-            status: 'pending',
-            is_converted_to_queue: false
+            customer_name, customer_email, user_id, barber_id, service_id,
+            scheduled_time: cleanTime, end_time: end_time, status: 'pending', is_converted_to_queue: false
         }).select().single();
-
         if (error) throw error;
-        
-        // Send Notification
-        try {
-            const { data: barberUser } = await supabaseAdmin.from('barber_profiles').select('user_id').eq('id', barber_id).single();
-            if (barberUser && process.env.N8N_WEBHOOK_URL) {
-                const { data: userData } = await supabaseAdmin.auth.admin.getUserById(barberUser.user_id);
-                const barberEmail = userData?.user?.email;
-                if (barberEmail) {
-                    await axios.post(process.env.N8N_WEBHOOK_URL, {
-                        type: 'barber_alert',
-                        email: barberEmail,
-                        subject: '✂️ New Booking Received!',
-                        message: `You have a new appointment with ${customer_name} on ${getFormattedTime(cleanTime)}.`
-                    });
-                }
-            }
-        } catch (e) { console.error("Notification failed", e.message); }
-
         res.status(201).json({ message: 'Appointment Confirmed!', appointment: data });
-
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { res.status(500).json({ error: error.message }); }
 };
 
-/**
- * ENDPOINT: Get Customer's Appointments
- */
 exports.get_customer_appointments = async (req, res) => {
     const { userId } = req.params;
-    if (!userId) return res.status(400).json({ error: 'User ID required' });
-
     try {
         const { data, error } = await supabase
             .from('appointments')
             .select(`id, scheduled_time, status, is_converted_to_queue, barber_id, service_id, barber_profiles(full_name), services(name, price_php, duration_minutes)`)
             .eq('user_id', userId)
             .order('scheduled_time', { ascending: false });
-
         if (error) throw error;
-        
-        const fixedData = data?.map(appt => ({
-            ...appt,
-            formatted_time: getFormattedTime(appt.scheduled_time)
-        }));
-
+        const fixedData = data?.map(appt => ({ ...appt, formatted_time: getFormattedTime(appt.scheduled_time) }));
         res.json(fixedData || []);
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch appointments.' });
-    }
-}
+    } catch (error) { res.status(500).json({ error: 'Failed to fetch.' }); }
+};
 
-/**
- * ENDPOINT: Admin Get All Upcoming Appointments
- */
-exports.get_all_appointments = async (req, res) => {
+exports.cancelAppointment = async (req, res) => {
+    const { id } = req.params;
     try {
-        const now = new Date();
-        const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
-        const todayStr = `${nowPH.getUTCFullYear()}-${String(nowPH.getUTCMonth()+1).padStart(2,'0')}-${String(nowPH.getUTCDate()).padStart(2,'0')}T00:00:00`;
-
-        const { data, error } = await supabase
-            .from('appointments')
-            .select(`id, scheduled_time, customer_name, customer_email, status, is_converted_to_queue, barber_profiles(full_name), services(name, duration_minutes)`)
-            .in('status', ['confirmed', 'pending']) 
-            .gte('scheduled_time', todayStr) 
-            .order('scheduled_time', { ascending: true });
-
+        const { data, error } = await supabase.from('appointments').update({ status: 'cancelled' }).eq('id', id).select().single();
         if (error) throw error;
-        
-        const fixedData = data?.map(appt => ({
-            ...appt,
-            formatted_time: getFormattedTime(appt.scheduled_time)
-        }));
+        res.status(200).json({ message: 'Appointment canceled successfully', data });
+    } catch (error) { res.status(500).json({ error: error.message }); }
+};
 
-        res.json(fixedData || []);
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch appointments.' });
-    }
-}
-
-/**
- * ENDPOINT: Get Barber's Upcoming Appointments
- */
-exports.get_barber_appointments = async (req, res) => {
-    const { barberId } = req.params;
-    if (!barberId) return res.status(400).json({ error: 'Barber ID required' });
-
+exports.editAppointment = async (req, res) => {
+    const { id } = req.params;
+    const { scheduled_time, service_id } = req.body;
     try {
-        const now = new Date();
-        const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
-        const todayStr = `${nowPH.getUTCFullYear()}-${String(nowPH.getUTCMonth()+1).padStart(2,'0')}-${String(nowPH.getUTCDate()).padStart(2,'0')}T00:00:00`;
-
-        const { data, error } = await supabase
-            .from('appointments')
-            .select(`id, scheduled_time, customer_name, customer_email, status, is_converted_to_queue, services(name, duration_minutes)`)
-            .eq('barber_id', barberId)
-            .in('status', ['confirmed', 'pending']) 
-            .gte('scheduled_time', todayStr) 
-            .order('scheduled_time', { ascending: true }); 
-
+        const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', service_id).single();
+        const duration = service?.duration_minutes || 30;
+        let cleanTime = scheduled_time.split('.')[0].split('+')[0]; 
+        if (cleanTime.endsWith('Z')) cleanTime = cleanTime.slice(0, -1);
+        const datePart = cleanTime.split('T')[0];
+        const timePart = cleanTime.split('T')[1];
+        const end_time = `${datePart}T${formatTime(parseInt(timePart.split(':')[0]) * 60 + parseInt(timePart.split(':')[1]) + duration)}`;
+        const { data, error } = await supabase.from('appointments').update({ 
+            scheduled_time: cleanTime, end_time: end_time, service_id: service_id, status: 'pending' 
+        }).eq('id', id).select().single();
         if (error) throw error;
-        
-        const fixedData = data?.map(appt => ({
-            ...appt,
-            formatted_time: getFormattedTime(appt.scheduled_time)
-        }));
-
-        res.json(fixedData || []);
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch appointments.' });
-    }
-}
+        res.status(200).json({ message: 'Appointment updated successfully', data });
+    } catch (error) { res.status(500).json({ error: error.message }); }
+};
 
 exports.reject = async (req, res) => {
-    const { appointmentId, reason } = req.body;
+    const { appointmentId } = req.body;
     try {
         const { data, error } = await supabase.from('appointments').update({ status: 'cancelled' }).eq('id', appointmentId).select().single();
         if (error) throw error;
@@ -273,173 +145,55 @@ exports.approve = async (req, res) => {
     } catch (error) { res.status(500).json({ error: 'Failed to approve.' }); }
 };
 
-exports.process_appointments = async (req, res) => {
-    const now = new Date();
-    const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
-    const lookBackPH = new Date(nowPH.getTime() - 24 * 60 * 60 * 1000);
-    const lbY = lookBackPH.getUTCFullYear();
-    const lbM = String(lookBackPH.getUTCMonth()+1).padStart(2,'0');
-    const lbD = String(lookBackPH.getUTCDate()).padStart(2,'0');
-    const lookBackStr = `${lbY}-${lbM}-${lbD}T00:00:00`;
-
+exports.get_all_appointments = async (req, res) => {
     try {
-        const { data: missed, error } = await supabase.from('appointments')
-            .select('*').in('status', ['confirmed']).eq('is_converted_to_queue', false).gte('scheduled_time', lookBackStr);
+        const now = new Date();
+        const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+        const todayStr = `${nowPH.getUTCFullYear()}-${String(nowPH.getUTCMonth()+1).padStart(2,'0')}-${String(nowPH.getUTCDate()).padStart(2,'0')}T00:00:00`;
+        const { data, error } = await supabase
+            .from('appointments')
+            .select(`id, scheduled_time, customer_name, status, is_converted_to_queue, barber_profiles(full_name), services(name, duration_minutes)`)
+            .in('status', ['confirmed', 'pending'])
+            .gte('scheduled_time', todayStr)
+            .order('scheduled_time', { ascending: true });
         if (error) throw error;
+        res.json(data?.map(appt => ({ ...appt, formatted_time: getFormattedTime(appt.scheduled_time) })) || []);
+    } catch (error) { res.status(500).json({ error: 'Failed to fetch.' }); }
+};
 
-        const results = [];
+exports.get_barber_appointments = async (req, res) => {
+    const { barberId } = req.params;
+    try {
+        const now = new Date();
+        const nowPH = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+        const todayStr = `${nowPH.getUTCFullYear()}-${String(nowPH.getUTCMonth()+1).padStart(2,'0')}-${String(nowPH.getUTCDate()).padStart(2,'0')}T00:00:00`;
+        const { data, error } = await supabase
+            .from('appointments')
+            .select(`id, scheduled_time, customer_name, status, is_converted_to_queue, services(name, duration_minutes)`)
+            .eq('barber_id', barberId)
+            .in('status', ['confirmed', 'pending'])
+            .gte('scheduled_time', todayStr)
+            .order('scheduled_time', { ascending: true });
+        if (error) throw error;
+        res.json(data?.map(appt => ({ ...appt, formatted_time: getFormattedTime(appt.scheduled_time) })) || []);
+    } catch (error) { res.status(500).json({ error: 'Failed to fetch.' }); }
+};
+
+exports.process_appointments = async (req, res) => {
+    try {
+        const nowPH = new Date(new Date().getTime() + (8 * 60 * 60 * 1000));
+        const lookBack = new Date(nowPH.getTime() - 24 * 60 * 60 * 1000).toISOString();
+        const { data: missed, error } = await supabase.from('appointments')
+            .select('*').in('status', ['confirmed']).eq('is_converted_to_queue', false).gte('scheduled_time', lookBack);
+        if (error) throw error;
         for (const appt of missed) {
-            const { data: newEntry } = await supabase.from('queue_entries').insert({
+            await supabase.from('queue_entries').insert({
                 barber_id: appt.barber_id, customer_name: `${appt.customer_name} (Booked)`,
                 customer_email: appt.customer_email, user_id: appt.user_id, service_id: appt.service_id,
                 status: 'Up Next', is_vip: true, is_confirmed: true
-            }).select().single();
-            if (newEntry) {
-                await supabase.from('appointments').update({ is_converted_to_queue: true }).eq('id', appt.id);
-                results.push(`Converted ${appt.customer_name}`);
-            }
+            });
+            await supabase.from('appointments').update({ is_converted_to_queue: true }).eq('id', appt.id);
         }
-        res.json({ success: true, processed: results });
-    } catch (e) { res.json({ error: e.message }); }
-}
-
-// Paste this at the bottom of src/controller/appointmentController.js
-
-exports.cancelAppointment = async (req, res) => {
-    const { id } = req.params;
-
-    try {
-        const { data, error } = await supabase
-            .from('appointments')
-            .update({ status: 'cancelled' }) // Lowercase 'cancelled' to match your frontend checks
-            .eq('id', id)
-            .select()
-            .single();
-
-        if (error) throw error;
-
-        // Safely check for webhook to prevent server crashes
-        if (process.env.N8N_WEBHOOK_URL) {
-            axios.post(process.env.N8N_WEBHOOK_URL, {
-                event: 'CANCELED',
-                appointment: data,
-                timestamp: new Date().toISOString()
-            }).catch(e => console.log("Webhook skipped"));
-        }
-
-        res.status(200).json({ message: 'Appointment canceled successfully', data });
-    } catch (error) {
-        console.error("Backend Cancel Error:", error);
-        res.status(500).json({ error: error.message || "Database update failed" });
-    }
-};
-
-exports.editAppointment = async (req, res) => {
-    const { id } = req.params;
-    const { scheduled_time, service_id } = req.body;
-
-    try {
-        if (!scheduled_time || !service_id) {
-            return res.status(400).json({ error: "Missing time or service selection." });
-        }
-
-        // Calculate new end_time
-        const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', service_id).single();
-        const duration = service?.duration_minutes || 30;
-
-        let cleanTime = scheduled_time.split('.')[0].split('+')[0]; 
-        if (cleanTime.endsWith('Z')) cleanTime = cleanTime.slice(0, -1);
-
-        const datePart = cleanTime.split('T')[0];
-        const timePart = cleanTime.split('T')[1];
-        
-        const startMins = parseInt(timePart.split(':')[0]) * 60 + parseInt(timePart.split(':')[1]);
-        const endMins = startMins + duration;
-        
-        // formatTime is declared at the top of your controller file
-        const end_time = `${datePart}T${formatTime(endMins)}`;
-
-        const { data, error } = await supabase
-            .from('appointments')
-            .update({ 
-                scheduled_time: cleanTime, 
-                end_time: end_time,
-                service_id: service_id, 
-                status: 'pending' // Send back to pending for barber approval
-            })
-            .eq('id', id)
-            .select()
-            .single();
-
-        if (error) throw error;
-
-        // Safely check for webhook
-        if (process.env.N8N_WEBHOOK_URL) {
-            axios.post(process.env.N8N_WEBHOOK_URL, {
-                event: 'RESCHEDULED',
-                appointment: data,
-                timestamp: new Date().toISOString()
-            }).catch(e => console.log("Webhook skipped"));
-        }
-
-        res.status(200).json({ message: 'Appointment updated successfully', data });
-    } catch (error) {
-        console.error("Backend Edit Error:", error);
-        res.status(500).json({ error: error.message || "Database update failed" });
-    }
-};
-
-exports.editAppointment = async (req, res) => {
-    const { id } = req.params;
-    const { scheduled_time, service_id } = req.body;
-
-    try {
-        if (!scheduled_time || !service_id) {
-            return res.status(400).json({ error: "Missing time or service selection." });
-        }
-
-        // Calculate new end_time
-        const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', service_id).single();
-        const duration = service?.duration_minutes || 30;
-
-        let cleanTime = scheduled_time.split('.')[0].split('+')[0]; 
-        if (cleanTime.endsWith('Z')) cleanTime = cleanTime.slice(0, -1);
-
-        const datePart = cleanTime.split('T')[0];
-        const timePart = cleanTime.split('T')[1];
-        
-        const startMins = parseInt(timePart.split(':')[0]) * 60 + parseInt(timePart.split(':')[1]);
-        const endMins = startMins + duration;
-        
-        // formatTime is declared at the top of your controller file
-        const end_time = `${datePart}T${formatTime(endMins)}`;
-
-        const { data, error } = await supabase
-            .from('appointments')
-            .update({ 
-                scheduled_time: cleanTime, 
-                end_time: end_time,
-                service_id: service_id, 
-                status: 'pending' // Send back to pending for barber approval
-            })
-            .eq('id', id)
-            .select()
-            .single();
-
-        if (error) throw error;
-
-        // Safely check for webhook
-        if (process.env.N8N_WEBHOOK_URL) {
-            axios.post(process.env.N8N_WEBHOOK_URL, {
-                event: 'RESCHEDULED',
-                appointment: data,
-                timestamp: new Date().toISOString()
-            }).catch(e => console.log("Webhook skipped"));
-        }
-
-        res.status(200).json({ message: 'Appointment updated successfully', data });
-    } catch (error) {
-        console.error("Backend Edit Error:", error);
-        res.status(500).json({ error: error.message || "Database update failed" });
-    }
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
 };

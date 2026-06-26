@@ -14,18 +14,19 @@ const {
 
 // All routes here are automatically prefixed with /api/appointments by server.js
 
-router.get('/slots', slots);
-router.post('/book', book);
-router.put('/reject', reject);
-router.put('/approve', approve);
-router.get('/my/:userId', get_customer_appointments);
-router.put('/cancel/:id', cancelAppointment);
-router.put('/edit/:id', editAppointment);
+const appointmentController = require('../controller/appointmentController');
 
-// FIX 1: Change '/appointments/barber/:barberId' to '/barber/:barberId'
-router.get('/barber/:barberId', get_barber_appointments);
+// Define the routes using the imported object
+router.get('/slots', appointmentController.slots);
+router.post('/book', appointmentController.book);
+router.put('/reject', appointmentController.reject);
+router.put('/approve', appointmentController.approve);
+router.get('/my/:userId', appointmentController.get_customer_appointments);
+router.get('/barber/:barberId', appointmentController.get_barber_appointments);
+router.get('/process', appointmentController.process_appointments);
 
-// FIX 2: Change '/test/process-appointments' to '/process' (to match what your frontend likely expects)
-router.get('/process', process_appointments); 
+// Fix: The routes
+router.put('/cancel/:id', appointmentController.cancelAppointment);
+router.put('/edit/:id', appointmentController.editAppointment);
 
 module.exports = router;
