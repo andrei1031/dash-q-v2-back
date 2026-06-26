@@ -443,15 +443,3 @@ exports.editAppointment = async (req, res) => {
         res.status(500).json({ error: error.message || "Database update failed" });
     }
 };
-module.exports = {
-    slots,
-    book,
-    reject,
-    approve,
-    get_customer_appointments,
-    get_all_appointments,
-    get_barber_appointments,
-    process_appointments,
-    cancelAppointment, // Make sure these are NOT inside another object
-    editAppointment
-};
