@@ -21,6 +21,18 @@ const getFormattedTime = (naiveString) => {
     return `${String(hours).padStart(2, '0')}:${mins} ${ampm}`;
 };
 
+const notifyN8n = async (action, appointmentData) => {
+    try {
+        await axios.post(N8N_WEBHOOK_URL, {
+            event: action, // 'CANCELED' or 'EDITED'
+            appointment: appointmentData,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('Failed to trigger n8n automation:', error.message);
+    }
+};
+
 /**
  * ENDPOINT: "Naive Time" Smart Slots
  * Completely ignores UTC. Calculates directly in literal Philippines time.
@@ -87,6 +99,57 @@ exports.slots = async (req, res) => {
     } catch (error) {
         console.error("Slot fetch error:", error);
         res.status(500).json({ error: 'Server error calculating slots' });
+    }
+};
+
+exports.cancelAppointment = async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const { data, error } = await supabase
+            .from('appointments')
+            .update({ status: 'Canceled' })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        // Trigger n8n automation
+        await notifyN8n('CANCELED', data);
+
+        res.status(200).json({ message: 'Appointment canceled successfully', data });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.editAppointment = async (req, res) => {
+    const { id } = req.params;
+    const { date, time, service_id } = req.body;
+
+    try {
+        const { data, error } = await supabase
+            .from('appointments')
+            .update({ 
+                date, 
+                time, 
+                service_id, 
+                status: 'Rescheduled', // Optional: Flag to show it was edited
+                updated_at: new Date().toISOString() 
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        // Trigger n8n automation
+        await notifyN8n('EDITED', data);
+
+        res.status(200).json({ message: 'Appointment updated successfully', data });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 };
 

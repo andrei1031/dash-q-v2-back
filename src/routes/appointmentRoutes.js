@@ -1,5 +1,7 @@
 const express = require('express');
 const router = express.Router();
+const appointmentController = require('../controller/appointmentController');
+const authMiddleware = require('../middleware/auth');
 
 const { 
     slots, 
@@ -25,5 +27,7 @@ router.get('/barber/:barberId', get_barber_appointments);
 
 // FIX 2: Change '/test/process-appointments' to '/process' (to match what your frontend likely expects)
 router.get('/process', process_appointments); 
+router.put('/:id/cancel', authMiddleware, appointmentController.cancelAppointment);
+router.put('/:id/edit', authMiddleware, appointmentController.editAppointment);
 
 module.exports = router;
