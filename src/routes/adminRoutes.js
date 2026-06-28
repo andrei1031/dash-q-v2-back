@@ -64,4 +64,6 @@ router.post('/chat/reply', replyToChat);
 router.get('/reports', fetchAllReports);
 router.put('/reports/resolve', resolveReport);
 
+router.put('/barber/booking-status', adminController.updateBarberBookingStatus);
+
 module.exports = router;

@@ -1094,3 +1094,17 @@ exports.toggle_barber_status = async (req, res) => {
         res.status(500).json({ error: "Internal server error during toggle." });
     }
 };
+exports.updateBarberBookingStatus = async (req, res) => {
+    const { barberId, is_booking_enabled } = req.body;
+    try {
+        const { data, error } = await supabase
+            .from('barber_profiles')
+            .update({ is_booking_enabled })
+            .eq('id', barberId);
+        
+        if (error) throw error;
+        res.json({ message: "Booking status updated successfully." });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};

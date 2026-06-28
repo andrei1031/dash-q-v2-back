@@ -25,6 +25,15 @@ exports.slots = async (req, res) => {
     const { barberId, date, serviceId } = req.query;
     if (!barberId || !date || !serviceId) return res.status(400).json({ error: 'Missing parameters' });
     try {
+        const { data: barber, error: barberError } = await supabase
+            .from('barber_profiles')
+            .select('is_booking_enabled')
+            .eq('id', barberId)
+            .single();
+
+        if (barberError || !barber.is_booking_enabled) {
+            return res.json([]);
+        }
         const { data: service } = await supabase.from('services').select('duration_minutes').eq('id', serviceId).single();
         const duration = service?.duration_minutes || 30;
         const now = new Date();
