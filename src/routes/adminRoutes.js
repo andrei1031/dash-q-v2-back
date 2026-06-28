@@ -8,6 +8,7 @@ const { get_all_appointments: fetchAllAppointments } = require('../controller/ap
 const { admin_active_chats: fetchActiveChats, admin_chats_reply: replyToChat } = require('../controller/chatController');
 const { get_all_reports: fetchAllReports, admin_reports_resolve: resolveReport } = require('../controller/reportsController');
 
+console.log("DEBUG: remove_admin_service is:", adminController.remove_admin_service);
 // Routes - Use adminController.<functionName>
 router.post('/next-customer', adminController.next_customer);
 router.post('/services', adminController.add_admin_services);
