@@ -20,7 +20,8 @@ const {
     get_customers_database,
     export_analytics_csv,
     recalculate_loyalty,
-    hard_delete_admin_service
+    hard_delete_admin_service,
+    adminController
 
 } = require('../controller/adminController');
 
