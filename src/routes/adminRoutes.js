@@ -1,72 +1,40 @@
 const express = require('express');
 const router = express.Router();
-
-// 1. Import the controller ONCE
 const adminController = require('../controller/adminController');
 
-// 2. Destructure only the functions you actually need for your routes
-const { 
-    next_customer, 
-    add_admin_services,
-    update_admin_service,
-    all_services,
-    restore_admin_service,
-    remove_admin_service,
-    get_admin_stats,
-    queue_transfer,
-    get_admin_analytics,
-    get_all_users,
-    remove_user,
-    force_next,
-    get_analytics_with_filter,
-    get_customers_database,
-    export_analytics_csv,
-    recalculate_loyalty,
-    hard_delete_admin_service,
-    toggle_barber_status // Added this here since you use it in a route below
-} = adminController;
-
-// Import from other controllers
+// Import other controllers
 const { get_all_barbers: fetchAllBarbers, barbers_status: toggleBarberStatus } = require('../controller/barberController');
 const { get_all_appointments: fetchAllAppointments } = require('../controller/appointmentController');
 const { admin_active_chats: fetchActiveChats, admin_chats_reply: replyToChat } = require('../controller/chatController');
 const { get_all_reports: fetchAllReports, admin_reports_resolve: resolveReport } = require('../controller/reportsController');
 
-// Routes
-router.post('/next-customer', next_customer);
-router.post('/services', add_admin_services);
-router.put('/services/:id', update_admin_service);
-router.get('/services', all_services);
-router.put('/services/:id/restore', restore_admin_service);
-router.delete('/services/:id', remove_admin_service);
-router.delete('/services/:id/hard-delete', hard_delete_admin_service);
-router.get('/stats', get_admin_stats);
-router.put('/transfer', queue_transfer);
-router.get('/analytics/advanced', get_admin_analytics);
-router.get('/analytics/filtered', get_analytics_with_filter);
-router.get('/customers', get_customers_database);
-router.get('/analytics/export', export_analytics_csv);
-router.get('/users', get_all_users);
-router.delete('/users/:targetId', remove_user);
-router.post('/force-next', force_next);
-router.post('/recalculate-loyalty', recalculate_loyalty);
-router.put('/staff/toggle/:barberId', toggle_barber_status);
-
-// NEW ROUTE
+// Routes - Use adminController.<functionName>
+router.post('/next-customer', adminController.next_customer);
+router.post('/services', adminController.add_admin_services);
+router.put('/services/:id', adminController.update_admin_service);
+router.get('/services', adminController.all_services);
+router.put('/services/:id/restore', adminController.restore_admin_service);
+router.delete('/services/:id', adminController.remove_admin_service);
+router.delete('/services/:id/hard-delete', adminController.hard_admin_service); // Ensure match
+router.get('/stats', adminController.get_admin_stats);
+router.put('/transfer', adminController.queue_transfer);
+router.get('/analytics/advanced', adminController.get_admin_analytics);
+router.get('/analytics/filtered', adminController.get_analytics_with_filter);
+router.get('/customers', adminController.get_customers_database);
+router.get('/analytics/export', adminController.export_analytics_csv);
+router.get('/users', adminController.get_all_users);
+router.delete('/users/:targetId', adminController.remove_user);
+router.post('/force-next', adminController.force_next);
+router.post('/recalculate-loyalty', adminController.recalculate_loyalty);
+router.put('/staff/toggle/:barberId', adminController.toggle_barber_status);
 router.put('/barber/booking-status', adminController.updateBarberBookingStatus);
 
-// Admin barbers routes
+// Other routes
 router.get('/barbers', fetchAllBarbers);
 router.put('/barbers/:id/status', toggleBarberStatus);
-
-// Admin appointments routes
 router.get('/appointments', fetchAllAppointments);
-
-// Admin chat routes
 router.get('/active-chats', fetchActiveChats);
 router.post('/chat/reply', replyToChat);
-
-// Admin reports routes
 router.get('/reports', fetchAllReports);
 router.put('/reports/resolve', resolveReport);
 
