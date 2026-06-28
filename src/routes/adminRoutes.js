@@ -1,6 +1,16 @@
 const express = require('express');
 const router = express.Router();
 const { toggle_barber_status } = require('../controller/adminController');
+const fs = require('fs');
+const path = require('path');
+
+const controllerPath = path.join(__dirname, '../controller/adminController.js');
+if (!fs.existsSync(controllerPath)) {
+    console.error("CRITICAL: File not found at:", controllerPath);
+}
+
+const adminController = require('../controller/adminController');
+console.log("Admin Controller content:", adminController);
 
 
 const { 

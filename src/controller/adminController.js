@@ -1105,7 +1105,6 @@ exports.updateBarberBookingStatus = async (req, res) => {
         if (error) throw error;
         res.json({ message: "Booking status updated successfully." });
     } catch (error) {
-        console.error("Admin Controller Error:", error);
         res.status(500).json({ error: error.message });
     }
 };
