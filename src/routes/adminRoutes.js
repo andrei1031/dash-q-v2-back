@@ -1,5 +1,7 @@
 const express = require('express');
 const router = express.Router();
+
+// 1. Single import
 const adminController = require('../controller/adminController');
 
 // Import other controllers
@@ -8,15 +10,14 @@ const { get_all_appointments: fetchAllAppointments } = require('../controller/ap
 const { admin_active_chats: fetchActiveChats, admin_chats_reply: replyToChat } = require('../controller/chatController');
 const { get_all_reports: fetchAllReports, admin_reports_resolve: resolveReport } = require('../controller/reportsController');
 
-console.log("DEBUG: remove_admin_service is:", adminController.remove_admin_service);
-// Routes - Use adminController.<functionName>
+// 2. Routes - Using the imported object directly
 router.post('/next-customer', adminController.next_customer);
 router.post('/services', adminController.add_admin_services);
 router.put('/services/:id', adminController.update_admin_service);
 router.get('/services', adminController.all_services);
 router.put('/services/:id/restore', adminController.restore_admin_service);
 router.delete('/services/:id', adminController.remove_admin_service);
-router.delete('/services/:id/hard-delete', adminController.hard_admin_service); // Ensure match
+router.delete('/services/:id/hard-delete', adminController.hard_delete_admin_service);
 router.get('/stats', adminController.get_admin_stats);
 router.put('/transfer', adminController.queue_transfer);
 router.get('/analytics/advanced', adminController.get_admin_analytics);
@@ -30,7 +31,7 @@ router.post('/recalculate-loyalty', adminController.recalculate_loyalty);
 router.put('/staff/toggle/:barberId', adminController.toggle_barber_status);
 router.put('/barber/booking-status', adminController.updateBarberBookingStatus);
 
-// Other routes
+// Other controllers
 router.get('/barbers', fetchAllBarbers);
 router.put('/barbers/:id/status', toggleBarberStatus);
 router.get('/appointments', fetchAllAppointments);
