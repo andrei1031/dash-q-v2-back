@@ -1,18 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const { toggle_barber_status } = require('../controller/adminController');
-const fs = require('fs');
-const path = require('path');
 
-const controllerPath = path.join(__dirname, '../controller/adminController.js');
-if (!fs.existsSync(controllerPath)) {
-    console.error("CRITICAL: File not found at:", controllerPath);
-}
-
+// 1. Import the controller ONCE
 const adminController = require('../controller/adminController');
-console.log("Admin Controller content:", adminController);
 
-
+// 2. Destructure only the functions you actually need for your routes
 const { 
     next_customer, 
     add_admin_services,
@@ -31,9 +23,8 @@ const {
     export_analytics_csv,
     recalculate_loyalty,
     hard_delete_admin_service,
-    adminController
-
-} = require('../controller/adminController');
+    toggle_barber_status // Added this here since you use it in a route below
+} = adminController;
 
 // Import from other controllers
 const { get_all_barbers: fetchAllBarbers, barbers_status: toggleBarberStatus } = require('../controller/barberController');
@@ -41,6 +32,7 @@ const { get_all_appointments: fetchAllAppointments } = require('../controller/ap
 const { admin_active_chats: fetchActiveChats, admin_chats_reply: replyToChat } = require('../controller/chatController');
 const { get_all_reports: fetchAllReports, admin_reports_resolve: resolveReport } = require('../controller/reportsController');
 
+// Routes
 router.post('/next-customer', next_customer);
 router.post('/services', add_admin_services);
 router.put('/services/:id', update_admin_service);
@@ -60,6 +52,9 @@ router.post('/force-next', force_next);
 router.post('/recalculate-loyalty', recalculate_loyalty);
 router.put('/staff/toggle/:barberId', toggle_barber_status);
 
+// NEW ROUTE
+router.put('/barber/booking-status', adminController.updateBarberBookingStatus);
+
 // Admin barbers routes
 router.get('/barbers', fetchAllBarbers);
 router.put('/barbers/:id/status', toggleBarberStatus);
@@ -74,9 +69,5 @@ router.post('/chat/reply', replyToChat);
 // Admin reports routes
 router.get('/reports', fetchAllReports);
 router.put('/reports/resolve', resolveReport);
-
-console.log("Admin Controller content:", adminController);
-
-router.put('/barber/booking-status', adminController.updateBarberBookingStatus);
 
 module.exports = router;
