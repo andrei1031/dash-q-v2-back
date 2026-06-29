@@ -1108,3 +1108,23 @@ exports.updateBarberBookingStatus = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+exports.unblock_device = async (req, res) => {
+    try {
+        console.log("DEBUG: Request received for unblocking:", req.body); // <--- Add this
+        
+        const { deviceFingerprint } = req.body; // <--- Maybe it's missing adminUserId?
+        
+        // If your database call is here, does it have a 'where' clause that might fail?
+        const { error } = await supabase
+            .from('blocked_devices')
+            .update({ is_active: false })
+            .eq('device_fingerprint', deviceFingerprint);
+
+        if (error) throw error;
+        
+        res.json({ message: "Success" });
+    } catch (err) {
+        console.error("DEBUG: ERROR in unblock_device:", err); // <--- Add this!
+        res.status(400).json({ error: err.message });
+    }
+};
