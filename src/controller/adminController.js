@@ -1128,20 +1128,6 @@ exports.unblock_device = async (req, res) => {
         res.status(400).json({ error: err.message });
     }
 };
-exports.add_barber = async (req, res) => {
-    const { userId, full_name, is_active } = req.body;
-    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
-
-    try {
-        const { data, error } = await supabase
-            .from('barber_profiles')
-            .insert([{ full_name, is_active }]);
-        if (error) throw error;
-        res.json({ message: 'Barber added successfully' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-};
 
 exports.delete_barber = async (req, res) => {
     const { id } = req.params;
@@ -1152,6 +1138,36 @@ exports.delete_barber = async (req, res) => {
         const { error } = await supabase.from('barber_profiles').delete().eq('id', id);
         if (error) throw error;
         res.json({ message: 'Barber deleted' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+exports.add_barber = async (req, res) => {
+    const { adminUserId, full_name } = req.body; // Added adminUserId check
+    if (!adminUserId) return res.status(400).json({ error: "Admin ID is required." });
+
+    try {
+        const { data, error } = await supabase
+            .from('barber_profiles')
+            .insert([{ full_name, is_active: true }]);
+        if (error) throw error;
+        res.json({ message: 'Barber added successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+exports.update_barber = async (req, res) => {
+    const { barberId } = req.params;
+    const { adminUserId, full_name, is_active } = req.body;
+    
+    try {
+        const { error } = await supabase
+            .from('barber_profiles')
+            .update({ full_name, is_active })
+            .eq('id', barberId);
+        if (error) throw error;
+        res.json({ message: 'Barber updated successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
