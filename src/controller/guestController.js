@@ -19,8 +19,11 @@ exports.join_as_guest = async (req, res) => {
         return res.status(400).json({ error: "Barber and Service selection are required." });
     }
 
-    // --- DEVICE BLOCKING CHECK ---
+    let warningMessage = null;
+
+    // --- DEVICE BLOCKING & 3-STRIKE SYSTEM ---
     if (deviceFingerprint) {
+        // 1. Check if the device is already blocked
         const { data: blockedDevice } = await supabase
             .from('blocked_devices')
             .select('*')
@@ -31,11 +34,44 @@ exports.join_as_guest = async (req, res) => {
         if (blockedDevice) {
             console.warn(`Blocked device attempted to join queue: ${deviceFingerprint}`);
             return res.status(403).json({ 
-                error: 'This device has been blocked from the system. Please contact the administrator.' 
+                error: '🚨 DEVICE BLOCKED: This device is permanently banned from the queue for spamming.' 
             });
         }
-    }
 
+        // 2. Count how many active queue entries this device already has
+        const { data: activeEntries, error: countError } = await supabase
+            .from('queue_entries')
+            .select('id')
+            .eq('device_fingerprint', deviceFingerprint)
+            .in('status', ['Waiting', 'Up Next', 'In Progress']);
+
+        if (!countError && activeEntries) {
+            const activeCount = activeEntries.length;
+
+            if (activeCount === 1) {
+                // STRIKE 2: Attach a warning flag to the response, but let them proceed for now.
+                warningMessage = "⚠️ WARNING: Multiple active accounts detected on this device. One more attempt will result in an automatic ban and deletion of your queue spots.";
+            } else if (activeCount >= 2) {
+                // STRIKE 3: Ban the device, purge their existing entries, and kick them out.
+                console.log(`[Auto-Ban] Device ${deviceFingerprint} banned for spamming.`);
+                
+                await supabase.from('blocked_devices').insert({
+                    device_fingerprint: deviceFingerprint,
+                    reason: 'Spamming multiple guest accounts',
+                    is_active: true
+                });
+
+                const idsToDelete = activeEntries.map(e => e.id);
+                if (idsToDelete.length > 0) {
+                    await supabase.from('queue_entries').delete().in('id', idsToDelete);
+                }
+
+                return res.status(403).json({ 
+                    error: "🚨 DEVICE BLOCKED: You have been blocked for trolling. All your active queue entries have been removed." 
+                });
+            }
+        }
+    }
     // --- END DEVICE BLOCKING CHECK ---
 
     // Check for active duplicate nickname FOR THIS BARBER
@@ -71,7 +107,6 @@ exports.join_as_guest = async (req, res) => {
                 finalGuestId = guestId;
             }
         }
-
 
         // Helper function to validate UUID
         function isValidUUID(uuid) {
@@ -123,7 +158,13 @@ exports.join_as_guest = async (req, res) => {
             console.error("Guest join promotion error:", promoError.message);
         }
 
-        res.status(201).json({ success: true, message: "Joined queue as guest.", data: data });
+        // Include the warning message in the response if it exists
+        res.status(201).json({ 
+            success: true, 
+            message: "Joined queue as guest.", 
+            data: data,
+            warning: warningMessage 
+        });
 
     } catch (error) {
         console.error("Guest join error:", error.message, error);
