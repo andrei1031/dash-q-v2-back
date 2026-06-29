@@ -1128,3 +1128,31 @@ exports.unblock_device = async (req, res) => {
         res.status(400).json({ error: err.message });
     }
 };
+exports.add_barber = async (req, res) => {
+    const { userId, full_name, is_active } = req.body;
+    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    try {
+        const { data, error } = await supabase
+            .from('barber_profiles')
+            .insert([{ full_name, is_active }]);
+        if (error) throw error;
+        res.json({ message: 'Barber added successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+exports.delete_barber = async (req, res) => {
+    const { id } = req.params;
+    const { userId } = req.body;
+    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    try {
+        const { error } = await supabase.from('barber_profiles').delete().eq('id', id);
+        if (error) throw error;
+        res.json({ message: 'Barber deleted' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
