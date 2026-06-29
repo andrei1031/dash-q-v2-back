@@ -88,6 +88,8 @@ app.use('/api', customerRoutes);
 const analyticsRoutes = require('./routes/analyticsRoutes');
 app.use('/api/analytics', analyticsRoutes);
 
+const guestController = require('./controllers/guestController');
+app.post('/api/guest/appeal', guestController.submit_appeal);
 
 // API ENDPOINTS END
 
