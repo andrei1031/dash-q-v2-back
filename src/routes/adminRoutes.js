@@ -29,7 +29,7 @@ router.delete('/users/:targetId', adminController.remove_user);
 router.post('/force-next', adminController.force_next);
 router.post('/recalculate-loyalty', adminController.recalculate_loyalty);
 router.put('/staff/toggle/:barberId', adminController.toggle_barber_status);
-router.put('/barber/booking-status', adminController.updateBarberBookingStatus);
+router.put('/barber/booking-status', adminController.update_booking_status);
 
 // Other controllers
 router.get('/barbers', fetchAllBarbers);
@@ -42,5 +42,6 @@ router.put('/reports/resolve', resolveReport);
 router.post('/add-barber', adminController.add_barber);
 router.post('/update-barber/:barberId', adminController.update_barber);
 router.delete('/barbers/:id', adminController.delete_barber);
+
 
 module.exports = router;

@@ -1094,20 +1094,7 @@ exports.toggle_barber_status = async (req, res) => {
         res.status(500).json({ error: "Internal server error during toggle." });
     }
 };
-exports.updateBarberBookingStatus = async (req, res) => {
-    const { barberId, is_booking_enabled } = req.body;
-    try {
-        const { data, error } = await supabase
-            .from('barber_profiles')
-            .update({ is_booking_enabled })
-            .eq('id', barberId);
-        
-        if (error) throw error;
-        res.json({ message: "Booking status updated successfully." });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
+
 exports.unblock_device = async (req, res) => {
     try {
         console.log("DEBUG: Request received for unblocking:", req.body); // <--- Add this
@@ -1172,6 +1159,25 @@ exports.update_barber = async (req, res) => {
             .eq('id', barberId);
         if (error) throw error;
         res.json({ message: 'Barber updated successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+exports.update_booking_status = async (req, res) => {
+    const { barberId, is_booking_enabled, userId } = req.body;
+
+    // Optional: Check if userId is an admin here if you have that middleware/function
+    // if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
+
+    try {
+        const { error } = await supabase
+            .from('barber_profiles')
+            .update({ is_booking_enabled })
+            .eq('id', barberId);
+            
+        if (error) throw error;
+        
+        res.json({ message: 'Booking status updated successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
