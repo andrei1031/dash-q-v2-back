@@ -171,3 +171,32 @@ exports.join_as_guest = async (req, res) => {
         res.status(500).json({ error: "Failed to join queue. " + error.message });
     }
 };
+/**
+ * ENDPOINT: Submit Appeal for Blocked Device
+ * Route: POST /api/guest/appeal
+ */
+exports.submit_appeal = async (req, res) => {
+    const { deviceFingerprint, reason, email } = req.body;
+
+    if (!deviceFingerprint || !reason) {
+        return res.status(400).json({ error: "Device info and reason are required." });
+    }
+
+    try {
+        // Create an entry in a new 'appeals' table or repurpose 'reports'
+        const { error } = await supabase
+            .from('appeals')
+            .insert({
+                device_fingerprint: deviceFingerprint,
+                reason: reason,
+                contact_email: email,
+                status: 'pending'
+            });
+
+        if (error) throw error;
+        
+        res.json({ message: "Appeal submitted successfully! An admin will review it." });
+    } catch (error) {
+        res.status(500).json({ error: "Failed to submit appeal." });
+    }
+};
