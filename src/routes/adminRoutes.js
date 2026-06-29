@@ -41,5 +41,6 @@ router.get('/reports', fetchAllReports);
 router.put('/reports/resolve', resolveReport);
 router.post('/add-barber', adminController.add_barber);
 router.post('/update-barber/:barberId', adminController.update_barber);
+router.delete('/barbers/:id', adminController.delete_barber);
 
 module.exports = router;

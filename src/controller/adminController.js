@@ -1132,16 +1132,20 @@ exports.unblock_device = async (req, res) => {
 exports.delete_barber = async (req, res) => {
     const { id } = req.params;
     const { userId } = req.body;
-    if (!await isAdmin(userId)) return res.status(403).json({ error: 'Unauthorized.' });
-
+    
     try {
-        const { error } = await supabase.from('barber_profiles').delete().eq('id', id);
+        const { error } = await supabase
+            .from('barber_profiles')
+            .delete()
+            .eq('id', id);
+            
         if (error) throw error;
-        res.json({ message: 'Barber deleted' });
+        res.json({ message: 'Barber deleted successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 };
+
 exports.add_barber = async (req, res) => {
     const { adminUserId, full_name } = req.body; // Added adminUserId check
     if (!adminUserId) return res.status(400).json({ error: "Admin ID is required." });
